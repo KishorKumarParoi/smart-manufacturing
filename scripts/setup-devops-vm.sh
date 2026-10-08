@@ -58,7 +58,9 @@ sudo apt-get install -y --no-install-recommends \
     apt-transport-https \
     ca-certificates \
     gnupg \
-    lsb-release
+    lsb-release \
+    acl \
+    procps
 
 # Configure Git & GitHub on host
 log_step "2/12: Configuring Git identity & GitHub CLI for ${GITHUB_USERNAME}..."
@@ -125,9 +127,38 @@ echo \
 
 sudo apt-get update -y
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo usermod -aG docker $USER
-sudo chmod 666 /var/run/docker.sock || true
-log_success "Docker installed successfully!"
+sudo usermod -aG docker "$REAL_USER"
+
+# Configure permanent non-root Docker socket permissions (mode 0666 - NO 'newgrp docker' required)
+sudo mkdir -p /etc/systemd/system/docker.socket.d
+cat << "EOF_DOCKER_SOCK" | sudo tee /etc/systemd/system/docker.socket.d/override.conf >/dev/null
+[Socket]
+SocketMode=0666
+EOF_DOCKER_SOCK
+
+sudo mkdir -p /etc/systemd/system/docker.service.d
+cat << "EOF_DOCKER_SVC" | sudo tee /etc/systemd/system/docker.service.d/override.conf >/dev/null
+[Service]
+ExecStartPost=/bin/sh -c 'chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true'
+EOF_DOCKER_SVC
+
+sudo mkdir -p /etc/tmpfiles.d
+cat << "EOF_TMPFILES" | sudo tee /etc/tmpfiles.d/docker.conf >/dev/null
+z /var/run/docker.sock 0666 root docker -
+z /run/docker.sock 0666 root docker -
+EOF_TMPFILES
+
+sudo mkdir -p /etc/udev/rules.d
+echo 'KERNEL=="docker.sock", MODE="0666"' | sudo tee /etc/udev/rules.d/80-docker.rules >/dev/null
+
+sudo systemctl daemon-reload >/dev/null 2>&1 || true
+sudo systemctl restart docker.socket >/dev/null 2>&1 || true
+sudo chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true
+if command -v setfacl >/dev/null 2>&1; then
+    sudo setfacl -m u:"$REAL_USER":rw /var/run/docker.sock 2>/dev/null || true
+    sudo setfacl -m u:"$REAL_USER":rw /run/docker.sock 2>/dev/null || true
+fi
+log_success "Docker installed with permanent non-root access (no newgrp needed)!"
 
 # 3. Install Terraform
 log_step "3/10: Installing Terraform..."
@@ -454,11 +485,63 @@ else
     log_success "Local UFW firewall rules configured!"
 fi
 
+# 13. System RAM Cleanup, Bloatware Purge & Performance Tuning
+log_step "13/13: Flushing RAM, purging bloatware/cache, and accelerating performance..."
+BLOAT_SERVICES=(whoopsie apport apport-autoreport unattended-upgrades update-notifier-download update-notifier-motd)
+for svc in "${BLOAT_SERVICES[@]}"; do
+    if sudo systemctl is-active --quiet "$svc" 2>/dev/null; then
+        sudo systemctl stop "$svc" 2>/dev/null || true
+    fi
+    sudo systemctl disable "$svc" 2>/dev/null || true
+    sudo systemctl mask "$svc" 2>/dev/null || true
+done
+
+export DEBIAN_FRONTEND=noninteractive
+sudo rm -f /var/lib/dpkg/lock* /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
+sudo apt-get autoremove --purge -y >/dev/null 2>&1 || true
+sudo apt-get autoclean -y >/dev/null 2>&1 || true
+sudo apt-get clean -y >/dev/null 2>&1 || true
+
+if command -v journalctl >/dev/null 2>&1; then
+    sudo journalctl --vacuum-time=1d --vacuum-size=50M >/dev/null 2>&1 || true
+fi
+sudo find /var/log -type f \( -name "*.gz" -o -name "*.1" -o -name "*.old" -o -name "*.xz" \) -delete 2>/dev/null || true
+sudo find /tmp -mindepth 1 -maxdepth 2 -not -name ".*" -not -name "hsperfdata_*" -mtime +1 -delete 2>/dev/null || true
+sudo rm -rf /root/.cache/pip /home/*/.cache/pip /tmp/pip* /tmp/*.whl 2>/dev/null || true
+
+sudo docker builder prune -f >/dev/null 2>&1 || true
+sudo docker network prune -f >/dev/null 2>&1 || true
+sudo docker image prune -f >/dev/null 2>&1 || true
+
+sudo mkdir -p /etc/sysctl.d
+cat << "EOF_SYSCTL" | sudo tee /etc/sysctl.d/99-devops-performance.conf >/dev/null
+vm.swappiness = 10
+vm.vfs_cache_pressure = 50
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+vm.max_map_count = 524288
+fs.file-max = 2097152
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 8192
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 8192
+EOF_SYSCTL
+sudo sysctl --system >/dev/null 2>&1 || true
+
+sync
+echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true
+echo 1 | sudo tee /proc/sys/vm/compact_memory >/dev/null 2>&1 || true
+if [ -f /proc/swaps ] && [ "$(wc -l < /proc/swaps 2>/dev/null || echo 0)" -gt 1 ]; then
+    sudo swapoff -a 2>/dev/null && sudo swapon -a 2>/dev/null || true
+fi
+log_success "RAM freed and system performance accelerated!"
+
 # Display Summary
 echo -e "\n${GREEN}${BOLD}==================================================================${NC}"
 echo -e "${GREEN}${BOLD} ✓ ALL DEVOPS SERVICES DEPLOYED SUCCESSFULLY!                     ${NC}"
 echo -e "${GREEN}${BOLD}==================================================================${NC}"
 echo -e "Access the services via your VM's External IP:"
+echo -e "  • ${BOLD}Docker:${NC}        $(docker --version) ${GREEN}[Non-root 0666 active]${NC}"
 echo -e "  • ${BOLD}Jenkins:${NC}       http://<EXTERNAL_IP>:8080"
 echo -e "  • ${BOLD}SonarQube:${NC}     http://<EXTERNAL_IP>:9000 (Default: admin / admin)"
 echo -e "  • ${BOLD}Nexus:${NC}         http://<EXTERNAL_IP>:8081"
