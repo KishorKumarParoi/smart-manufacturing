@@ -952,62 +952,210 @@ else
     echo -e "${GREEN}[✓] ArgoCD port-forward service is already running on 0.0.0.0:30751.${NC}"
 fi
 
-# C. Automatic Cloud Firewall (GCP)
+# C. Automatic Cloud Firewall (GCP) - Full Automation with Multi-Strategy Fallback
 GCP_METADATA_HEADER="Metadata-Flavor: Google"
 GCP_METADATA_BASE="http://metadata.google.internal/computeMetadata/v1"
-GCP_VM_NAME=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/name" 2>/dev/null || true)
+GCP_VM_NAME=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/name" 2>/dev/null || true)
 
 if [ -n "$GCP_VM_NAME" ]; then
-    GCP_ZONE_RAW=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/zone" 2>/dev/null || true)
+    GCP_ZONE_RAW=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/zone" 2>/dev/null || true)
     GCP_ZONE=$(echo "$GCP_ZONE_RAW" | awk -F/ '{print $NF}')
-    GCP_PROJECT=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
+    GCP_PROJECT=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
+    GCP_REGION=$(echo "$GCP_ZONE" | sed 's/-[a-z]$//')
     
-    echo -e "${GREEN}[✓] Google Cloud VM detected:${NC} ${BOLD}${GCP_VM_NAME}${NC} (Zone: ${GCP_ZONE}, Project: ${GCP_PROJECT})"
+    echo -e "${GREEN}[✓] Google Cloud VM detected:${NC} ${BOLD}${GCP_VM_NAME}${NC}"
+    echo -e "    Zone: ${BOLD}${GCP_ZONE}${NC} | Project: ${BOLD}${GCP_PROJECT}${NC} | Region: ${BOLD}${GCP_REGION}${NC}"
 
+    PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:8000,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Strategy A: Install gcloud CLI if missing
+    # ──────────────────────────────────────────────────────────────────────────
+    if ! command -v gcloud >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] gcloud CLI not found. Installing Google Cloud SDK automatically...${NC}"
+        # Install gcloud via apt (Google-signed keyring)
+        if ! dpkg -s google-cloud-cli >/dev/null 2>&1; then
+            mkdir -p /etc/apt/keyrings
+            curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+                | gpg --dearmor -o /etc/apt/keyrings/cloud.google.gpg --yes 2>/dev/null || true
+            echo "deb [signed-by=/etc/apt/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+                | tee /etc/apt/sources.list.d/google-cloud-sdk.list >/dev/null
+            apt-get update -y >/dev/null 2>&1 || true
+            apt-get install -y google-cloud-cli >/dev/null 2>&1 || true
+        fi
+
+        if command -v gcloud >/dev/null 2>&1; then
+            echo -e "${GREEN}[✓] gcloud CLI installed successfully: $(gcloud --version | head -n1)${NC}"
+        else
+            echo -e "${YELLOW}[!] gcloud CLI install failed. Will use GCP REST API fallback.${NC}"
+        fi
+    else
+        echo -e "${GREEN}[✓] gcloud CLI available: $(gcloud --version 2>/dev/null | head -n1 || echo 'installed')${NC}"
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Strategy B: Authenticate gcloud using the VM's attached service account
+    #             (works without any manual login or key file)
+    # ──────────────────────────────────────────────────────────────────────────
     if command -v gcloud >/dev/null 2>&1; then
-        CURRENT_TAGS=$(gcloud compute instances describe "$GCP_VM_NAME" --zone="$GCP_ZONE" --format="value(tags.items)" 2>/dev/null || true)
+        GCP_SA_EMAIL=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" \
+            "$GCP_METADATA_BASE/instance/service-accounts/default/email" 2>/dev/null || true)
+        
+        if [ -n "$GCP_SA_EMAIL" ]; then
+            echo -e "${YELLOW}[*] Authenticating gcloud with attached service account: ${GCP_SA_EMAIL}...${NC}"
+            gcloud auth activate-service-account --key-file /dev/null >/dev/null 2>&1 || true
+            gcloud config set project "$GCP_PROJECT" --quiet >/dev/null 2>&1 || true
+            gcloud config set compute/zone "$GCP_ZONE" --quiet >/dev/null 2>&1 || true
+            gcloud config set compute/region "$GCP_REGION" --quiet >/dev/null 2>&1 || true
+            # Use Application Default Credentials sourced from the metadata server
+            export GOOGLE_APPLICATION_CREDENTIALS=""
+            export CLOUDSDK_AUTH_ACCESS_TOKEN=$(curl -s -f -m 5 -H "$GCP_METADATA_HEADER" \
+                "$GCP_METADATA_BASE/instance/service-accounts/default/token" \
+                | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+            echo -e "${GREEN}[✓] gcloud authenticated via attached service account.${NC}"
+        else
+            echo -e "${YELLOW}[!] No service account attached to this VM. gcloud will use default credentials.${NC}"
+        fi
+
+        # ──────────────────────────────────────────────────────────────────────
+        # Strategy C: Attach network tags to VM instance
+        # ──────────────────────────────────────────────────────────────────────
+        echo -e "${YELLOW}[*] Attaching network tags to VM '${GCP_VM_NAME}' (${TARGET_TAGS})...${NC}"
+        CURRENT_TAGS=$(gcloud compute instances describe "$GCP_VM_NAME" \
+            --zone="$GCP_ZONE" \
+            --project="$GCP_PROJECT" \
+            --format="value(tags.items)" 2>/dev/null || true)
+        
         if echo "$CURRENT_TAGS" | grep -qw "allow-devops-platform"; then
             echo -e "${GREEN}[✓] Instance already has 'allow-devops-platform' network tag.${NC}"
         else
-            echo -e "${YELLOW}[*] Attaching network tags '${TARGET_TAGS}' to GCP instance '${GCP_VM_NAME}'...${NC}"
             gcloud compute instances add-tags "$GCP_VM_NAME" \
                 --zone="$GCP_ZONE" \
+                --project="$GCP_PROJECT" \
                 --tags="$TARGET_TAGS" \
-                --quiet >/dev/null 2>&1 || true
+                --quiet >/dev/null 2>&1 \
+                && echo -e "${GREEN}[✓] Network tags '${TARGET_TAGS}' attached to VM.${NC}" \
+                || echo -e "${YELLOW}[!] Could not attach network tags (insufficient permissions).${NC}"
         fi
 
-        PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:8000,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
+        # ──────────────────────────────────────────────────────────────────────
+        # Strategy D: Create or Update GCP Firewall Rule via gcloud CLI
+        # ──────────────────────────────────────────────────────────────────────
+        echo -e "${YELLOW}[*] Configuring GCP VPC firewall rule '${FIREWALL_NAME}'...${NC}"
         
-        if gcloud compute firewall-rules describe "$FIREWALL_NAME" ${GCP_PROJECT:+--project="$GCP_PROJECT"} >/dev/null 2>&1; then
+        if gcloud compute firewall-rules describe "$FIREWALL_NAME" \
+                --project="$GCP_PROJECT" --quiet >/dev/null 2>&1; then
+            # Update existing rule
             gcloud compute firewall-rules update "$FIREWALL_NAME" \
-                ${GCP_PROJECT:+--project="$GCP_PROJECT"} \
+                --project="$GCP_PROJECT" \
                 --allow="$PORT_SPEC" \
+                --source-ranges="0.0.0.0/0" \
                 --target-tags="$TARGET_TAGS" \
-                --quiet >/dev/null 2>&1 || true
-            echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' verified & updated!${NC}"
+                --quiet >/dev/null 2>&1 \
+                && echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' updated with all DevOps ports!${NC}" \
+                || echo -e "${YELLOW}[!] Could not update firewall rule (will try REST API).${NC}"
         else
+            # Create new rule
             if gcloud compute firewall-rules create "$FIREWALL_NAME" \
-                ${GCP_PROJECT:+--project="$GCP_PROJECT"} \
-                --direction=INGRESS \
-                --priority=1000 \
-                --network=default \
-                --action=ALLOW \
-                --rules="$PORT_SPEC" \
-                --source-ranges=0.0.0.0/0 \
-                --target-tags="$TARGET_TAGS" \
-                --description="Automated DevOps Platform Firewall Rules" \
-                --quiet 2>/dev/null; then
-                echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' created and applied!${NC}"
+                    --project="$GCP_PROJECT" \
+                    --direction=INGRESS \
+                    --priority=1000 \
+                    --network=default \
+                    --action=ALLOW \
+                    --rules="$PORT_SPEC" \
+                    --source-ranges=0.0.0.0/0 \
+                    --target-tags="$TARGET_TAGS" \
+                    --description="DevOps Platform: Jenkins, ArgoCD, SonarQube, Kubernetes NodePorts" \
+                    --quiet 2>/dev/null; then
+                echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' CREATED successfully!${NC}"
+                echo -e "${GREEN}    Ports open: 22, 80, 443, 8000, 8080, 8081, 9000, 30000-32767, 50000${NC}"
             else
-                echo -e "${YELLOW}[!] Note: Could not auto-create GCP firewall rule from inside VM (service account lacks compute.firewalls.create).${NC}"
-                echo -e "${YELLOW}[!] If http://${EXTERNAL_IP:-<VM_IP>}:8080 does not open, run this on your local machine or Google Cloud Shell:${NC}"
-                echo -e "    ${BOLD}gcloud compute firewall-rules create ${FIREWALL_NAME} --allow=${PORT_SPEC} --source-ranges=0.0.0.0/0 --target-tags=${TARGET_TAGS}${NC}"
+                echo -e "${YELLOW}[!] gcloud firewall create failed. Trying GCP REST API fallback...${NC}"
+                GCLOUD_FAILED=true
             fi
         fi
     else
-        echo -e "${YELLOW}[!] gcloud CLI is not installed in the VM environment.${NC}"
-        echo -e "${YELLOW}[!] To open port 8080 from outside, run this command from your laptop/Cloud Shell:${NC}"
-        echo -e "    ${BOLD}gcloud compute firewall-rules create ${FIREWALL_NAME} --allow=tcp:22,tcp:80,tcp:443,tcp:8080,tcp:30751,tcp:30752 --source-ranges=0.0.0.0/0 --target-tags=${TARGET_TAGS}${NC}"
+        GCLOUD_FAILED=true
+    fi
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Strategy E: GCP Compute REST API Fallback (no gcloud required)
+    #             Uses the VM's attached service account token from metadata server
+    # ──────────────────────────────────────────────────────────────────────────
+    if [ "${GCLOUD_FAILED:-false}" = "true" ]; then
+        echo -e "${YELLOW}[*] Using GCP Compute REST API to create firewall rule '${FIREWALL_NAME}'...${NC}"
+        
+        # Fetch access token from metadata service (always works if VM has compute scope)
+        GCP_ACCESS_TOKEN=$(curl -s -f -m 5 \
+            -H "$GCP_METADATA_HEADER" \
+            "$GCP_METADATA_BASE/instance/service-accounts/default/token" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null \
+            || curl -s -f -m 5 \
+                -H "$GCP_METADATA_HEADER" \
+                "$GCP_METADATA_BASE/instance/service-accounts/default/token" \
+            | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4 2>/dev/null || true)
+        
+        if [ -n "$GCP_ACCESS_TOKEN" ] && [ -n "$GCP_PROJECT" ]; then
+            echo -e "${YELLOW}[*] Service account token acquired. Submitting firewall rule via REST API...${NC}"
+            
+            FIREWALL_PAYLOAD=$(cat <<EOF_JSON
+{
+  "name": "${FIREWALL_NAME}",
+  "description": "DevOps Platform: Jenkins(8080), ArgoCD(30751), SonarQube(9000), NodePorts(30000-32767)",
+  "network": "global/networks/default",
+  "priority": 1000,
+  "direction": "INGRESS",
+  "allowed": [
+    {"IPProtocol": "tcp", "ports": ["22","80","443","8000","8080","8081","9000","30080","30751","30752","30000-32767","50000"]}
+  ],
+  "sourceRanges": ["0.0.0.0/0"],
+  "targetTags": ["allow-devops-platform","devops-control-plane","devops-vm"],
+  "selfLink": ""
+}
+EOF_JSON
+)
+            # Try to create; if already exists, update instead
+            GCP_FW_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                "https://compute.googleapis.com/compute/v1/projects/${GCP_PROJECT}/global/firewalls" \
+                -H "Authorization: Bearer ${GCP_ACCESS_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "$FIREWALL_PAYLOAD" 2>/dev/null || echo "000")
+            
+            if [ "$GCP_FW_RESPONSE" = "200" ] || [ "$GCP_FW_RESPONSE" = "201" ]; then
+                echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' created via REST API (HTTP ${GCP_FW_RESPONSE})!${NC}"
+            elif [ "$GCP_FW_RESPONSE" = "409" ]; then
+                # Rule already exists — PATCH to update allowed ports
+                echo -e "${YELLOW}[*] Firewall rule exists. Updating allowed ports via REST API PATCH...${NC}"
+                GCP_PATCH_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
+                    "https://compute.googleapis.com/compute/v1/projects/${GCP_PROJECT}/global/firewalls/${FIREWALL_NAME}" \
+                    -H "Authorization: Bearer ${GCP_ACCESS_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    -d "$FIREWALL_PAYLOAD" 2>/dev/null || echo "000")
+                if [ "$GCP_PATCH_RESPONSE" = "200" ] || [ "$GCP_PATCH_RESPONSE" = "201" ]; then
+                    echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' updated via REST API (HTTP ${GCP_PATCH_RESPONSE})!${NC}"
+                else
+                    echo -e "${YELLOW}[!] REST API PATCH returned HTTP ${GCP_PATCH_RESPONSE}. Rule may need compute.firewalls.update permission.${NC}"
+                fi
+            elif [ "$GCP_FW_RESPONSE" = "403" ]; then
+                echo -e "${RED}[✗] REST API returned 403 Forbidden — Service account lacks compute.firewalls.create permission.${NC}"
+                echo -e "${YELLOW}[!] Run the command below from Google Cloud Shell to grant access:${NC}"
+                echo -e "    ${BOLD}gcloud projects add-iam-policy-binding ${GCP_PROJECT} \\"
+                echo -e "      --member=\"serviceAccount:\$(gcloud compute instances describe ${GCP_VM_NAME} --zone=${GCP_ZONE} --format='value(serviceAccounts[0].email)')\" \\"
+                echo -e "      --role=\"roles/compute.securityAdmin\"${NC}"
+                echo ""
+                echo -e "${CYAN}[MANUAL FIX] Or run this 1-line command in Google Cloud Shell to open all DevOps ports:${NC}"
+                echo -e "    ${BOLD}gcloud compute firewall-rules create ${FIREWALL_NAME} --project=${GCP_PROJECT} --allow=${PORT_SPEC} --source-ranges=0.0.0.0/0 --target-tags=${TARGET_TAGS}${NC}"
+            else
+                echo -e "${YELLOW}[!] REST API returned HTTP ${GCP_FW_RESPONSE}. Could not create firewall rule automatically.${NC}"
+                echo -e "${CYAN}[MANUAL FIX] Run in Google Cloud Shell:${NC}"
+                echo -e "    ${BOLD}gcloud compute firewall-rules create ${FIREWALL_NAME} --project=${GCP_PROJECT} --allow=${PORT_SPEC} --source-ranges=0.0.0.0/0 --target-tags=${TARGET_TAGS}${NC}"
+            fi
+        else
+            echo -e "${YELLOW}[!] Could not obtain service account token from metadata server.${NC}"
+            echo -e "${YELLOW}[!] The VM may not have a service account with compute scope attached.${NC}"
+            echo -e "${CYAN}[MANUAL FIX] Run in Google Cloud Shell:${NC}"
+            echo -e "    ${BOLD}gcloud compute firewall-rules create ${FIREWALL_NAME} --project=${GCP_PROJECT:-<YOUR_PROJECT>} --allow=${PORT_SPEC} --source-ranges=0.0.0.0/0 --target-tags=${TARGET_TAGS}${NC}"
+        fi
     fi
 else
     echo -e "${YELLOW}[*] Standalone Ubuntu environment (non-GCP). Local UFW firewall rules are active.${NC}"
