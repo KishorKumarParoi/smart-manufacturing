@@ -30,11 +30,12 @@ header
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     echo "Usage: sudo bash $0 [OPTIONS]"
     echo "Options:"
-    echo "  (no args)     Run full DevOps platform installation & optimization"
-    echo "  --optimize    Clear RAM caches, vacuum logs, remove bloatware, and tune kernel"
-    echo "  --cleanup     Alias for --optimize"
-    echo "  --speedup     Alias for --optimize"
-    echo "  --help, -h    Show this help message"
+    echo "  (no args)        Run full DevOps platform installation & optimization"
+    echo "  --optimize       Clear RAM caches, vacuum logs, remove bloatware, and tune kernel"
+    echo "  --cleanup        Alias for --optimize"
+    echo "  --speedup        Alias for --optimize"
+    echo "  --fix-minikube   Reset stale Minikube Docker network bridge and recover cluster"
+    echo "  --help, -h       Show this help message"
     exit 0
 fi
 
@@ -202,17 +203,67 @@ EOF_LIMITS
     echo -e "    • Swappiness: ${BOLD}$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '10')${NC} (optimized for DevOps workloads)"
 }
 
+# Minikube Self-Healing & Network Recovery Function
+fix_and_start_minikube() {
+    echo -e "\n${YELLOW}${BOLD}[*] Auto-Healing Minikube Cluster & Docker Network IPAM...${NC}"
+    
+    # 1. Stop conflicting k3s service if active on host
+    if systemctl is-active --quiet k3s 2>/dev/null; then
+        echo -e "${YELLOW}[!] Disabling conflicting k3s service to free Kubernetes control-plane ports...${NC}"
+        systemctl stop k3s 2>/dev/null || true
+        systemctl disable k3s 2>/dev/null || true
+    fi
+
+    # 2. Purge stale Minikube profile and container
+    echo -e "${YELLOW}[*] Purging stale Minikube profile and removing orphaned container...${NC}"
+    sudo -u "$REAL_USER" minikube delete --all --purge >/dev/null 2>&1 || true
+    docker rm -f minikube 2>/dev/null || true
+
+    # 3. Clean Docker network bridge 'minikube' to release locked IP addresses (Address already in use)
+    echo -e "${YELLOW}[*] Resetting Docker network bridge 'minikube'...${NC}"
+    docker network rm minikube 2>/dev/null || true
+    docker network prune -f >/dev/null 2>&1 || true
+
+    # 4. Refresh Docker daemon socket & daemon to clear stale IPAM tables
+    echo -e "${YELLOW}[*] Refreshing Docker daemon network IPAM tables...${NC}"
+    systemctl restart docker.socket docker >/dev/null 2>&1 || true
+    chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true
+    if command -v setfacl >/dev/null 2>&1; then
+        setfacl -m u:"$REAL_USER":rw /var/run/docker.sock 2>/dev/null || true
+        setfacl -m u:"$REAL_USER":rw /run/docker.sock 2>/dev/null || true
+    fi
+    sleep 2
+
+    # 5. Start clean Minikube cluster
+    echo -e "${YELLOW}[*] Starting clean Minikube cluster using Docker driver...${NC}"
+    if sudo -u "$REAL_USER" minikube start --driver=docker; then
+        echo -e "${GREEN}[✓] Minikube cluster recovered and running!${NC}"
+    else
+        echo -e "${YELLOW}[*] Retrying with clean dedicated network bridge...${NC}"
+        sudo -u "$REAL_USER" minikube delete --all --purge >/dev/null 2>&1 || true
+        docker rm -f minikube 2>/dev/null || true
+        docker network rm minikube 2>/dev/null || true
+        sudo -u "$REAL_USER" minikube start --driver=docker --network=minikube-net
+        echo -e "${GREEN}[✓] Minikube cluster recovered with clean network!${NC}"
+    fi
+}
+
 # Handle standalone execution flags
 if [[ "$1" == "--optimize" || "$1" == "--clean" || "$1" == "--cleanup" || "$1" == "--speedup" || "$1" == "-o" ]]; then
     optimize_system_and_ram
     exit 0
+elif [[ "$1" == "--fix-minikube" || "$1" == "--repair-minikube" ]]; then
+    fix_and_start_minikube
+    exit 0
 elif [[ "$1" == "--help" || "$1" == "-h" ]]; then
     echo "Usage: sudo bash $0 [OPTIONS]"
     echo "Options:"
-    echo "  (no args)     Run full DevOps platform installation & optimization"
-    echo "  --optimize    Clear RAM caches, vacuum logs, remove bloatware, and tune kernel"
-    echo "  --cleanup     Alias for --optimize"
-    echo "  --help, -h    Show this help message"
+    echo "  (no args)        Run full DevOps platform installation & optimization"
+    echo "  --optimize       Clear RAM caches, vacuum logs, remove bloatware, and tune kernel"
+    echo "  --cleanup        Alias for --optimize"
+    echo "  --speedup        Alias for --optimize"
+    echo "  --fix-minikube   Reset stale Minikube Docker network bridge and recover cluster"
+    echo "  --help, -h       Show this help message"
     exit 0
 fi
 
@@ -467,13 +518,24 @@ fi
 
 # Check if Minikube is already running
 MINIKUBE_STATUS=$(sudo -u "$REAL_USER" minikube status --format='{{.Host}}' 2>/dev/null || echo "Stopped")
-if [ "$MINIKUBE_STATUS" = "Running" ]; then
+if [ "$MINIKUBE_STATUS" = "Running" ] && sudo -u "$REAL_USER" kubectl get nodes >/dev/null 2>&1; then
     echo -e "${GREEN}[✓] Minikube cluster is already RUNNING! Skipping cluster bootstrap.${NC}"
 else
+    # Prevent k3s or other kubernetes distribution from conflicting on port 6443/8443
+    if systemctl is-active --quiet k3s 2>/dev/null; then
+        echo -e "${YELLOW}[!] Disabling conflicting k3s service to free Kubernetes control-plane ports...${NC}"
+        systemctl stop k3s 2>/dev/null || true
+        systemctl disable k3s 2>/dev/null || true
+    fi
+
     echo -e "${YELLOW}[*] Starting Minikube cluster using Docker driver (network 'minikube')...${NC}"
-    sudo -u "$REAL_USER" minikube config set driver docker
-    sudo -u "$REAL_USER" minikube start --driver=docker
-    echo -e "${GREEN}[✓] Minikube cluster is up!${NC}"
+    if sudo -u "$REAL_USER" minikube start --driver=docker; then
+        echo -e "${GREEN}[✓] Minikube cluster is up!${NC}"
+    else
+        echo -e "\n${YELLOW}[!] Minikube start failed on existing container ('Address already in use' / IPAM conflict detected).${NC}"
+        echo -e "${YELLOW}[*] Triggering automated self-healing recovery...${NC}"
+        fix_and_start_minikube
+    fi
 fi
 
 # Sync kubeconfig for root
