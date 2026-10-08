@@ -89,19 +89,56 @@ curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 log_success "Kubernetes & Helm installed! Nodes: $(kubectl get nodes --no-headers | awk '{print $1, $2}')"
 
 # 6. Deploy Jenkins (Docker)
-log_step "6/10: Deploying Jenkins with Docker CLI integration on port 8080..."
-sudo mkdir -p /var/jenkins_home
-sudo chown -R 1000:1000 /var/jenkins_home
-docker run -d \
-  --name jenkins \
-  --restart always \
-  -p 8080:8080 \
-  -p 50000:50000 \
-  -v /var/jenkins_home:/var/jenkins_home \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v $(which docker):/usr/bin/docker \
-  jenkins/jenkins:lts-jdk17
-log_success "Jenkins container started on port 8080!"
+log_step "6/10: Deploying Jenkins with Docker CLI integration and direct login on port 8080..."
+JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER:-admin}"
+JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD:-admin123}"
+sudo mkdir -p /var/jenkins_home/init.groovy.d
+echo "2.0" | sudo tee /var/jenkins_home/jenkins.install.UpgradeWizard.state >/dev/null
+echo "2.440.4" | sudo tee /var/jenkins_home/jenkins.install.InstallUtil.lastExecVersion >/dev/null
+
+cat << EOF_GROOVY | sudo tee /var/jenkins_home/init.groovy.d/01-create-admin.groovy >/dev/null
+import jenkins.model.*
+import hudson.security.*
+import jenkins.install.InstallState
+
+def instance = Jenkins.getInstance()
+def realm = instance.getSecurityRealm()
+if (!(realm instanceof HudsonPrivateSecurityRealm)) {
+    realm = new HudsonPrivateSecurityRealm(false)
+    instance.setSecurityRealm(realm)
+}
+def user = realm.getUser("${JENKINS_ADMIN_USER}")
+if (user == null || realm.getAllUsers().find { it.getId().equalsIgnoreCase("${JENKINS_ADMIN_USER}") } == null) {
+    realm.createAccount("${JENKINS_ADMIN_USER}", "${JENKINS_ADMIN_PASSWORD}")
+} else {
+    def pwd = hudson.security.HudsonPrivateSecurityRealm.Details.fromPlainPassword("${JENKINS_ADMIN_PASSWORD}")
+    user.addProperty(pwd)
+}
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(false)
+instance.setAuthorizationStrategy(strategy)
+try { instance.setInstallState(InstallState.INITIAL_SETUP_COMPLETED) } catch (Throwable t) {}
+instance.save()
+EOF_GROOVY
+
+sudo chmod -R 777 /var/jenkins_home
+
+if docker ps -q -f name=^jenkins$ | grep -q .; then
+    log_success "Jenkins container is already running!"
+else
+    docker rm -f jenkins 2>/dev/null || true
+    docker run -d \
+      --name jenkins \
+      --restart always \
+      -p 8080:8080 \
+      -p 50000:50000 \
+      -v /var/jenkins_home:/var/jenkins_home \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v $(which docker):/usr/bin/docker \
+      -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" \
+      jenkins/jenkins:lts-jdk17
+    log_success "Jenkins container started on port 8080 (Login: ${JENKINS_ADMIN_USER} / ${JENKINS_ADMIN_PASSWORD})!"
+fi
 
 # 7. Deploy SonarQube (Docker)
 log_step "7/10: Deploying SonarQube Community Edition on port 9000..."
