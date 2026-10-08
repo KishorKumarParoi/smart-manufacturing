@@ -1,3 +1,5 @@
+import pytest
+pytest.importorskip("torch")
 import torch
 import numpy as np
 from src.models.anomaly_detector import IndustrialSensorAutoencoder

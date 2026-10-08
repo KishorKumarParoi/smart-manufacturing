@@ -15,6 +15,14 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+REAL_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6 || echo "$HOME")
+
+GIT_USER_NAME="${GIT_USER_NAME:-Kishor Kumar Paroi}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-1703053@student.ruet.ac.bd}"
+GITHUB_USERNAME="${GITHUB_USERNAME:-KishorKumarParoi}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+
 log_step() {
     echo -e "\n${CYAN}${BOLD}[STEP] $1${NC}"
 }
@@ -24,7 +32,7 @@ log_success() {
 }
 
 # 1. Update and base packages
-log_step "1/10: Updating system packages and installing baseline utilities..."
+log_step "1/12: Updating system packages and installing baseline utilities..."
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends \
     curl \
@@ -37,6 +45,50 @@ sudo apt-get install -y --no-install-recommends \
     ca-certificates \
     gnupg \
     lsb-release
+
+# Configure Git & GitHub on host
+log_step "2/12: Configuring Git identity & GitHub CLI for ${GITHUB_USERNAME}..."
+git config --global user.name "$GIT_USER_NAME"
+git config --global user.email "$GIT_USER_EMAIL"
+git config --global init.defaultBranch main
+git config --global credential.helper store
+sudo -u "$REAL_USER" git config --global user.name "$GIT_USER_NAME" 2>/dev/null || true
+sudo -u "$REAL_USER" git config --global user.email "$GIT_USER_EMAIL" 2>/dev/null || true
+sudo -u "$REAL_USER" git config --global init.defaultBranch main 2>/dev/null || true
+sudo -u "$REAL_USER" git config --global credential.helper store 2>/dev/null || true
+
+# Install GitHub CLI
+if ! command -v gh >/dev/null 2>&1; then
+    mkdir -p -m 755 /etc/apt/keyrings
+    wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+    sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    sudo apt-get update -y && sudo apt-get install -y gh
+fi
+
+# Configure SSH key for GitHub
+SSH_DIR="$USER_HOME/.ssh"
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+if [ ! -f "$SSH_DIR/id_ed25519" ] && [ ! -f "$SSH_DIR/id_rsa" ]; then
+    sudo -u "$REAL_USER" ssh-keygen -t ed25519 -C "$GIT_USER_EMAIL" -f "$SSH_DIR/id_ed25519" -N "" 2>/dev/null || true
+fi
+touch "$SSH_DIR/known_hosts"
+if ! grep -q "github.com" "$SSH_DIR/known_hosts" 2>/dev/null; then
+    ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$SSH_DIR/known_hosts" 2>/dev/null || true
+fi
+
+# Store Git credentials if GITHUB_TOKEN is available
+if [ -n "$GITHUB_TOKEN" ]; then
+    CRED_ENTRY="https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com"
+    echo "$CRED_ENTRY" > "$USER_HOME/.git-credentials"
+    chmod 600 "$USER_HOME/.git-credentials"
+    echo "$CRED_ENTRY" > /root/.git-credentials
+    chmod 600 /root/.git-credentials
+    echo "$GITHUB_TOKEN" | sudo -u "$REAL_USER" gh auth login --with-token 2>/dev/null || true
+    sudo -u "$REAL_USER" gh auth setup-git 2>/dev/null || true
+fi
+log_success "Git & GitHub configured (${GIT_USER_NAME} <${GIT_USER_EMAIL}>)!"
 
 # Configure kernel parameters for SonarQube (Elasticsearch requirement)
 echo "Configuring kernel limits for SonarQube..."
@@ -88,8 +140,8 @@ export KUBECONFIG=$HOME/.kube/config
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 log_success "Kubernetes & Helm installed! Nodes: $(kubectl get nodes --no-headers | awk '{print $1, $2}')"
 
-# 6. Deploy Jenkins (Docker)
-log_step "6/10: Deploying Jenkins with Docker CLI integration and direct login on port 8080..."
+# 7. Deploy Jenkins (Docker)
+log_step "7/12: Deploying Jenkins with Docker CLI integration, direct login, and Git/GitHub setup on port 8080..."
 JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER:-admin}"
 JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD:-admin123}"
 sudo mkdir -p /var/jenkins_home/init.groovy.d
@@ -121,10 +173,86 @@ try { instance.setInstallState(InstallState.INITIAL_SETUP_COMPLETED) } catch (Th
 instance.save()
 EOF_GROOVY
 
+# GitHub Credentials for Jenkins Pipelines
+cat << 'EOF_GROOVY_GH' | sudo tee /var/jenkins_home/init.groovy.d/02-github-credentials.groovy >/dev/null
+import jenkins.model.*
+import com.cloudbees.plugins.credentials.*
+import com.cloudbees.plugins.credentials.domains.*
+import com.cloudbees.plugins.credentials.impl.*
+import org.jenkinsci.plugins.plaincredentials.impl.*
+import hudson.util.Secret
+
+def githubUser = System.getenv("GITHUB_USERNAME") ?: ""
+def githubToken = System.getenv("GITHUB_TOKEN") ?: ""
+
+if (githubToken?.trim()) {
+    try {
+        def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0]?.getStore()
+        if (store != null) {
+            def domain = Domain.global()
+            def upCred = new UsernamePasswordCredentialsImpl(
+                CredentialsScope.GLOBAL,
+                "github-token",
+                "GitHub Access Token for ${githubUser}",
+                githubUser,
+                githubToken
+            )
+            def existingUp = store.getCredentials(domain).find { it.id == "github-token" }
+            if (existingUp) { store.removeCredentials(domain, existingUp) }
+            store.addCredentials(domain, upCred)
+
+            try {
+                def stCred = new StringCredentialsImpl(
+                    CredentialsScope.GLOBAL,
+                    "github-pat",
+                    "GitHub Personal Access Token for ${githubUser}",
+                    Secret.fromString(githubToken)
+                )
+                def existingSt = store.getCredentials(domain).find { it.id == "github-pat" }
+                if (existingSt) { store.removeCredentials(domain, existingSt) }
+                store.addCredentials(domain, stCred)
+            } catch (Throwable t2) {}
+        }
+    } catch (Throwable t) {}
+}
+EOF_GROOVY_GH
+
+# Configure Git config & credentials inside Jenkins home
+cat << EOF_GIT | sudo tee /var/jenkins_home/.gitconfig >/dev/null
+[user]
+	name = ${GIT_USER_NAME}
+	email = ${GIT_USER_EMAIL}
+[credential]
+	helper = store
+EOF_GIT
+
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com" | sudo tee /var/jenkins_home/.git-credentials >/dev/null
+    sudo chmod 600 /var/jenkins_home/.git-credentials
+fi
+
+# Sync SSH keys into Jenkins home
+sudo mkdir -p /var/jenkins_home/.ssh
+if [ -f "$SSH_DIR/id_ed25519" ]; then
+    sudo cp "$SSH_DIR/id_ed25519" /var/jenkins_home/.ssh/id_ed25519 2>/dev/null || true
+    sudo cp "$SSH_DIR/id_ed25519.pub" /var/jenkins_home/.ssh/id_ed25519.pub 2>/dev/null || true
+fi
+if [ -f "$SSH_DIR/known_hosts" ]; then
+    sudo cp "$SSH_DIR/known_hosts" /var/jenkins_home/.ssh/known_hosts 2>/dev/null || true
+fi
+sudo chmod 700 /var/jenkins_home/.ssh 2>/dev/null || true
+sudo chown -R 1000:1000 /var/jenkins_home/.ssh /var/jenkins_home/.gitconfig /var/jenkins_home/.git-credentials /var/jenkins_home/init.groovy.d 2>/dev/null || true
 sudo chmod -R 777 /var/jenkins_home
 
 if docker ps -q -f name=^jenkins$ | grep -q .; then
-    log_success "Jenkins container is already running!"
+    docker cp /var/jenkins_home/init.groovy.d/02-github-credentials.groovy jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
+    docker cp /var/jenkins_home/.gitconfig jenkins:/var/jenkins_home/.gitconfig 2>/dev/null || true
+    if [ -n "$GITHUB_TOKEN" ]; then
+        docker cp /var/jenkins_home/.git-credentials jenkins:/var/jenkins_home/.git-credentials 2>/dev/null || true
+    fi
+    docker cp /var/jenkins_home/.ssh/. jenkins:/var/jenkins_home/.ssh/ 2>/dev/null || true
+    docker exec -u root jenkins chown -R 1000:1000 /var/jenkins_home/.ssh /var/jenkins_home/.gitconfig /var/jenkins_home/.git-credentials 2>/dev/null || true
+    log_success "Jenkins container is running and Git/GitHub credentials synced!"
 else
     docker rm -f jenkins 2>/dev/null || true
     docker run -d \
@@ -136,12 +264,16 @@ else
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v $(which docker):/usr/bin/docker \
       -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" \
+      -e JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER}" \
+      -e JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD}" \
+      -e GITHUB_USERNAME="${GITHUB_USERNAME}" \
+      -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
       jenkins/jenkins:lts-jdk17
     log_success "Jenkins container started on port 8080 (Login: ${JENKINS_ADMIN_USER} / ${JENKINS_ADMIN_PASSWORD})!"
 fi
 
-# 7. Deploy SonarQube (Docker)
-log_step "7/10: Deploying SonarQube Community Edition on port 9000..."
+# 8. Deploy SonarQube (Docker)
+log_step "8/12: Deploying SonarQube Community Edition on port 9000..."
 sudo mkdir -p /var/sonarqube_data /var/sonarqube_extensions /var/sonarqube_logs
 sudo chmod -R 777 /var/sonarqube_data /var/sonarqube_extensions /var/sonarqube_logs
 docker run -d \
@@ -154,8 +286,8 @@ docker run -d \
   sonarqube:community
 log_success "SonarQube container started on port 9000!"
 
-# 8. Deploy Sonatype Nexus 3 (Docker)
-log_step "8/10: Deploying Sonatype Nexus Repository Manager on port 8081..."
+# 9. Deploy Sonatype Nexus 3 (Docker)
+log_step "9/12: Deploying Sonatype Nexus Repository Manager on port 8081..."
 sudo mkdir -p /var/nexus-data
 sudo chown -R 200:200 /var/nexus-data
 docker run -d \
@@ -166,8 +298,8 @@ docker run -d \
   sonatype/nexus3:latest
 log_success "Nexus container started on port 8081!"
 
-# 9. Deploy ArgoCD on Kubernetes
-log_step "9/10: Deploying ArgoCD in Kubernetes & exposing via NodePort (Port 30080)..."
+# 10. Deploy ArgoCD on Kubernetes
+log_step "10/12: Deploying ArgoCD in Kubernetes & exposing via NodePort (Port 30080)..."
 kubectl create namespace argocd || true
 kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
@@ -180,13 +312,13 @@ sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
 rm argocd-linux-amd64
 log_success "ArgoCD deployed in Kubernetes and accessible at NodePort 30080!"
 
-# 10. Install CircleCI CLI
-log_step "10/11: Installing CircleCI CLI & Runner toolchain..."
+# 11. Install CircleCI CLI
+log_step "11/12: Installing CircleCI CLI & Runner toolchain..."
 curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/master/install.sh | sudo bash
 log_success "CircleCI CLI installed ($(circleci version))"
 
-# 11. Configure Firewall Rules (GCP "allow-devops-platform" & UFW)
-log_step "11/11: Applying automatic firewall rules ('allow-devops-platform')..."
+# 12. Configure Firewall Rules (GCP "allow-devops-platform" & UFW)
+log_step "12/12: Applying automatic firewall rules ('allow-devops-platform')..."
 FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
 TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
 REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
@@ -231,8 +363,19 @@ echo -e "  • ${BOLD}SonarQube:${NC}     http://<EXTERNAL_IP>:9000 (Default: ad
 echo -e "  • ${BOLD}Nexus:${NC}         http://<EXTERNAL_IP>:8081"
 echo -e "  • ${BOLD}ArgoCD:${NC}        http://<EXTERNAL_IP>:30080  (or :30751)"
 echo -e "  • ${BOLD}Firewall Rule:${NC} ${GREEN}${FIREWALL_NAME}${NC}"
-echo -e "\nTo view initial passwords:"
-echo -e "  ${CYAN}Jenkins Admin Password:${NC} sudo cat /var/jenkins_home/secrets/initialAdminPassword"
-echo -e "  ${CYAN}Nexus Admin Password:${NC}   sudo cat /var/nexus-data/admin.password"
-echo -e "  ${CYAN}ArgoCD Admin Password:${NC}  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo"
+echo -e "\n${CYAN}${BOLD}🔑 Credentials Summary:${NC}"
+echo -e "  ${BOLD}Git Author:${NC}             ${GIT_USER_NAME} <${GIT_USER_EMAIL}>"
+echo -e "  ${BOLD}GitHub Profile:${NC}         ${GREEN}${GITHUB_USERNAME}${NC}"
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo -e "  ${BOLD}GitHub Token:${NC}           ${GREEN}[Configured in Git helper & Jenkins 'github-token']${NC}"
+else
+    echo -e "  ${BOLD}GitHub Token:${NC}           ${YELLOW}[Set via: export GITHUB_TOKEN=ghp_... and re-run]${NC}"
+fi
+if [ -f "$USER_HOME/.ssh/id_ed25519.pub" ]; then
+    echo -e "  ${BOLD}SSH Public Key:${NC}         ${USER_HOME}/.ssh/id_ed25519.pub"
+fi
+echo -e "  ${BOLD}Jenkins Login:${NC}          ${JENKINS_ADMIN_USER} / ${JENKINS_ADMIN_PASSWORD}"
+echo -e "  ${BOLD}Jenkins Admin Secret:${NC}   sudo cat /var/jenkins_home/secrets/initialAdminPassword 2>/dev/null || true"
+echo -e "  ${BOLD}Nexus Admin Password:${NC}   sudo cat /var/nexus-data/admin.password 2>/dev/null || true"
+echo -e "  ${BOLD}ArgoCD Admin Password:${NC}  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d 2>/dev/null && echo"
 echo -e "==================================================================\n"
