@@ -157,14 +157,6 @@ else
     echo -e "${GREEN}[✓] ArgoCD CLI installed.${NC}"
 fi
 
-# Azure CLI
-if command -v az >/dev/null 2>&1; then
-    echo -e "${GREEN}[✓] Azure CLI is already installed: ${NC}$(az version 2>/dev/null | grep -o '\"azure-cli\": \"[^\"]*\"' | head -n 1 || echo 'installed')"
-else
-    echo -e "${YELLOW}[*] Installing Azure CLI (az)...${NC}"
-    curl -sL https://aka.ms/InstallAzureCLIDeb | bash >/dev/null 2>&1 || true
-    echo -e "${GREEN}[✓] Azure CLI installed.${NC}"
-fi
 
 # Shell completion and aliases
 if ! grep -q "alias k=kubectl" "$USER_HOME/.bashrc" 2>/dev/null; then
