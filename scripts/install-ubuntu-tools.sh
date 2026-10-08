@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# UBUNTU SETUP SCRIPT: DOCKER + MINIKUBE + KUBECTL + JENKINS
-# Supported OS: Ubuntu 20.04 / 22.04 / 24.04 LTS (x86_64)
+# ALL-IN-ONE UBUNTU DEVOPS SETUP SCRIPT
+# Docker | Minikube | Kubectl | ArgoCD CLI & Server | Jenkins (Containerized)
+# Target OS: Ubuntu 20.04 / 22.04 / 24.04 LTS (x86_64)
 # ==============================================================================
 
 set -eo pipefail
@@ -17,8 +18,8 @@ header() {
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
 ==================================================================
-  DEVOPS STACK INSTALLER FOR UBUNTU
-  Docker | Minikube | Kubectl | Jenkins (Java 17)
+  DEVOPS PLATFORM AUTOMATED SETUP FOR UBUNTU
+  Docker | Minikube | Kubectl | ArgoCD | Jenkins (in Minikube Network)
 ==================================================================
 EOF
     echo -e "${NC}"
@@ -34,13 +35,14 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 REAL_USER="${SUDO_USER:-$USER}"
+USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
-echo -e "${YELLOW}[*] Installing packages for user:${NC} ${BOLD}${REAL_USER}${NC}"
+echo -e "${YELLOW}[*] Installing DevOps toolchain for user:${NC} ${BOLD}${REAL_USER}${NC}"
 
 # ==============================================================================
-# 1. System Update & Dependencies
+# 1. Update Apt & Install Base Dependencies
 # ==============================================================================
-echo -e "\n${CYAN}[1/5] Updating apt repository and installing prerequisites...${NC}"
+echo -e "\n${CYAN}[1/6] Updating packages and installing baseline utilities...${NC}"
 apt-get update -y
 apt-get install -y --no-install-recommends \
     apt-transport-https \
@@ -55,9 +57,9 @@ apt-get install -y --no-install-recommends \
     jq
 
 # ==============================================================================
-# 2. Install Docker CE
+# 2. Install Docker CE & Configure Permissions
 # ==============================================================================
-echo -e "\n${CYAN}[2/5] Installing Docker Engine & Docker Compose...${NC}"
+echo -e "\n${CYAN}[2/6] Installing Docker CE and Docker Compose Plugin...${NC}"
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
 chmod a+r /etc/apt/keyrings/docker.gpg
@@ -70,94 +72,159 @@ echo \
 apt-get update -y
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-# Enable and start Docker
 systemctl enable docker
 systemctl start docker
 
-# Add non-root user to docker group
+# Add user to docker group
 usermod -aG docker "$REAL_USER"
 chmod 666 /var/run/docker.sock || true
 echo -e "${GREEN}[✓] Docker installed successfully! (${NC}$(docker --version)${GREEN})${NC}"
 
 # ==============================================================================
-# 3. Install Kubectl
+# 3. Install Kubectl & ArgoCD CLI on Host
 # ==============================================================================
-echo -e "\n${CYAN}[3/5] Installing Kubectl...${NC}"
+echo -e "\n${CYAN}[3/6] Installing Kubectl and ArgoCD CLI on host...${NC}"
+
+# Kubectl
 K8S_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
 curl -LO "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl"
 chmod +x kubectl
 mv kubectl /usr/local/bin/kubectl
 
-# Setup bash completion and alias for the real user
-USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+# ArgoCD CLI
+curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+chmod +x /usr/local/bin/argocd
+
+# Configure aliases & autocompletion
 if ! grep -q "alias k=kubectl" "$USER_HOME/.bashrc" 2>/dev/null; then
     echo "alias k=kubectl" >> "$USER_HOME/.bashrc"
     echo "complete -o default -F __start_kubectl k" >> "$USER_HOME/.bashrc"
     echo "source <(kubectl completion bash)" >> "$USER_HOME/.bashrc"
 fi
 echo -e "${GREEN}[✓] Kubectl installed: ${NC}$(kubectl version --client --output=yaml | grep gitVersion | head -n 1)"
+echo -e "${GREEN}[✓] ArgoCD CLI installed: ${NC}$(argocd version --client --short 2>/dev/null || echo 'installed')"
 
 # ==============================================================================
-# 4. Install Minikube
+# 4. Install & Start Minikube (Docker Driver)
 # ==============================================================================
-echo -e "\n${CYAN}[4/5] Installing Minikube...${NC}"
+echo -e "\n${CYAN}[4/6] Installing Minikube & Bootstrapping Cluster...${NC}"
 curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
 install minikube-linux-amd64 /usr/local/bin/minikube
 rm -f minikube-linux-amd64
-echo -e "${GREEN}[✓] Minikube installed: ${NC}$(minikube version --short)"
 
-# Start minikube as the non-root user using docker driver
-echo -e "${YELLOW}[*] Starting Minikube cluster with Docker driver (takes ~1-2 min)...${NC}"
+echo -e "${YELLOW}[*] Starting Minikube cluster using Docker driver (creates 'minikube' network)...${NC}"
 sudo -u "$REAL_USER" minikube config set driver docker
-sudo -u "$REAL_USER" minikube start --driver=docker || {
-    echo -e "${YELLOW}[!] Minikube start can be completed later by running: minikube start --driver=docker${NC}"
-}
+sudo -u "$REAL_USER" minikube start --driver=docker
+
+# Configure kubeconfig for root as well
+mkdir -p /root/.kube
+cp "$USER_HOME/.kube/config" /root/.kube/config
+chown -R root:root /root/.kube
+
+echo -e "${GREEN}[✓] Minikube cluster is UP! Nodes:${NC}"
+kubectl get nodes
 
 # ==============================================================================
-# 5. Install Jenkins & Java 17
+# 5. Deploy & Configure ArgoCD on Minikube
 # ==============================================================================
-echo -e "\n${CYAN}[5/5] Installing Java 17 OpenJDK & Jenkins...${NC}"
-apt-get install -y fontconfig openjdk-17-jre openjdk-17-jdk
+echo -e "\n${CYAN}[5/6] Deploying ArgoCD on Kubernetes (Minikube)...${NC}"
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-# Jenkins official keyring and repo
-wget -O /usr/share/keyrings/jenkins-keyring.asc https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+echo -e "${YELLOW}[*] Waiting for ArgoCD server deployment to be ready...${NC}"
+kubectl rollout status deployment/argocd-server -n argocd --timeout=180s || true
 
-apt-get update -y
-apt-get install -y jenkins
+# Patch ArgoCD Server service to NodePort 30751 for external browser access
+kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort", "ports": [{"name": "http", "port": 80, "targetPort": 8080, "nodePort": 30751}, {"name": "https", "port": 443, "targetPort": 8080, "nodePort": 30752}]}}'
 
-# Ensure Jenkins user can access docker socket
-usermod -aG docker jenkins || true
+# Extract initial admin password
+echo -e "${YELLOW}[*] Retrieving ArgoCD initial admin password...${NC}"
+ARGOCD_PASSWORD=""
+for i in {1..12}; do
+    ARGOCD_PASSWORD=$(kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || true)
+    if [ -n "$ARGOCD_PASSWORD" ]; then
+        break
+    fi
+    sleep 5
+done
 
-systemctl daemon-reload
-systemctl enable jenkins
-systemctl restart jenkins
+# ==============================================================================
+# 6. Deploy Jenkins Container (Root, Docker-in-Docker, Minikube Network)
+# ==============================================================================
+echo -e "\n${CYAN}[6/6] Deploying Jenkins Container connected to Minikube Network...${NC}"
 
-echo -e "${GREEN}[✓] Jenkins service started on port 8080!${NC}"
+# Stop existing container if present
+docker rm -f jenkins 2>/dev/null || true
 
-# Wait briefly for Jenkins to initialize and generate admin password
-echo -e "${YELLOW}[*] Waiting for Jenkins to generate initial admin password...${NC}"
+DOCKER_GID=$(getent group docker | cut -d: -f3)
+
+docker run -d --name jenkins \
+  --restart always \
+  -p 8080:8080 \
+  -p 50000:50000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $(which docker):/usr/bin/docker \
+  -u root \
+  -e DOCKER_GID="${DOCKER_GID}" \
+  --network minikube \
+  jenkins/jenkins:lts
+
+echo -e "${YELLOW}[*] Waiting for Jenkins container to initialize...${NC}"
 sleep 15
+
+echo -e "${YELLOW}[*] Installing Python 3, pip, venv, Kubectl & ArgoCD CLI inside Jenkins container...${NC}"
+docker exec -u root jenkins bash -c "
+  apt update -y && \
+  apt install -y python3 python3-pip python3-venv curl jq && \
+  ln -sf /usr/bin/python3 /usr/bin/python && \
+  curl -LO \"https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && \
+  chmod +x kubectl && mv kubectl /usr/local/bin/kubectl && \
+  curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64 && \
+  chmod +x /usr/local/bin/argocd
+"
+
+# Copy Kubeconfig into Jenkins container so pipelines can interact with Minikube
+echo -e "${YELLOW}[*] Configuring Kubeconfig inside Jenkins container...${NC}"
+docker exec -u root jenkins mkdir -p /root/.kube /var/jenkins_home/.kube
+docker cp /root/.kube/config jenkins:/root/.kube/config
+docker cp /root/.kube/config jenkins:/var/jenkins_home/.kube/config
+docker exec -u root jenkins chown -R 1000:1000 /var/jenkins_home/.kube
+
+# Retrieve Jenkins Initial Admin Password
+JENKINS_PASSWORD=""
+for i in {1..12}; do
+    JENKINS_PASSWORD=$(docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword 2>/dev/null || true)
+    if [ -n "$JENKINS_PASSWORD" ]; then
+        break
+    fi
+    sleep 5
+done
 
 # ==============================================================================
 # Summary & Next Steps
 # ==============================================================================
-EXTERNAL_IP=$(curl -s -4 ifconfig.me || hostname -I | awk '{print $1}')
+EXTERNAL_IP=$(curl -s -4 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 
 echo -e "\n${GREEN}${BOLD}==================================================================${NC}"
-echo -e "${GREEN}${BOLD} ✓ INSTALLATION COMPLETE!                                         ${NC}"
+echo -e "${GREEN}${BOLD} ✓ SETUP COMPLETED SUCCESSFULLY!                                  ${NC}"
 echo -e "${GREEN}${BOLD}==================================================================${NC}"
-echo -e "  • ${BOLD}Docker:${NC}     $(docker --version)"
-echo -e "  • ${BOLD}Kubectl:${NC}    $(kubectl version --client --output=yaml | grep gitVersion | head -n 1 | awk '{print $2}')"
-echo -e "  • ${BOLD}Minikube:${NC}   $(minikube version --short)"
-echo -e "  • ${BOLD}Jenkins URL:${NC} http://${EXTERNAL_IP}:8080"
-echo -e "\n${CYAN}${BOLD}Jenkins Initial Admin Password:${NC}"
-if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
-    echo -e "${BOLD}$(cat /var/lib/jenkins/secrets/initialAdminPassword)${NC}"
-else
-    echo -e "Run once Jenkins completes booting: ${BOLD}sudo cat /var/lib/jenkins/secrets/initialAdminPassword${NC}"
-fi
+echo -e "  • ${BOLD}Docker:${NC}        $(docker --version)"
+echo -e "  • ${BOLD}Minikube:${NC}      $(minikube version --short)"
+echo -e "  • ${BOLD}Kubectl:${NC}       $(kubectl version --client --output=yaml | grep gitVersion | head -n 1 | awk '{print $2}')"
+echo -e "  • ${BOLD}Jenkins:${NC}       http://${EXTERNAL_IP}:8080"
+echo -e "  • ${BOLD}ArgoCD Web:${NC}    http://${EXTERNAL_IP}:30751  (or https://${EXTERNAL_IP}:30752)"
 
-echo -e "\n${YELLOW}${BOLD}Note on Docker permissions:${NC}"
-echo -e "Run ${BOLD}newgrp docker${NC} or log out and log back in to use docker commands without sudo."
+echo -e "\n${CYAN}${BOLD}🔑 Credentials Summary:${NC}"
+echo -e "  ${BOLD}Jenkins Admin Password:${NC}"
+echo -e "  ${GREEN}${JENKINS_PASSWORD:-"Run: docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword"}${NC}"
+
+echo -e "\n  ${BOLD}ArgoCD Credentials:${NC}"
+echo -e "  Username: ${BOLD}admin${NC}"
+echo -e "  Password: ${GREEN}${ARGOCD_PASSWORD:-"Run: kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"}${NC}"
+
+echo -e "\n${YELLOW}${BOLD}ArgoCD CLI Login Command:${NC}"
+echo -e "  argocd login ${EXTERNAL_IP}:30751 --username admin --password \"${ARGOCD_PASSWORD}\" --insecure"
+
+echo -e "\n${YELLOW}${BOLD}Docker Non-Root Access:${NC}"
+echo -e "  Run ${BOLD}newgrp docker${NC} to run docker commands without sudo in your current terminal."
 echo -e "==================================================================\n"
