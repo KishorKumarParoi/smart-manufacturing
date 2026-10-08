@@ -806,13 +806,13 @@ elif [ -n "$JENKINS_EXISTS" ]; then
     echo -e "${YELLOW}[*] Jenkins container exists but is stopped. Starting container...${NC}"
     docker start jenkins >/dev/null 2>&1 || true
 else
-    echo -e "${YELLOW}[*] Deploying new Jenkins container connected to Minikube network...${NC}"
-    DOCKER_GID=$(getent group docker | cut -d: -f3 2>/dev/null || echo 999)
+    # Ensure minikube bridge network exists or create it
+    docker network inspect minikube >/dev/null 2>&1 || docker network create minikube >/dev/null 2>&1 || true
 
     docker run -d --name jenkins \
       --restart always \
-      -p 8080:8080 \
-      -p 50000:50000 \
+      -p 0.0.0.0:8080:8080 \
+      -p 0.0.0.0:50000:50000 \
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v $(which docker):/usr/bin/docker \
       -v "${JENKINS_HOME_HOST}:/var/jenkins_home" \
@@ -825,8 +825,12 @@ else
       -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
       -e DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME}" \
       -e DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN}" \
-      --network minikube \
       jenkins/jenkins:lts
+
+    # Connect to minikube network if present
+    if docker network inspect minikube >/dev/null 2>&1; then
+        docker network connect minikube jenkins 2>/dev/null || true
+    fi
 fi
 
 # 7. Ensure required Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git, Pipelines)
@@ -982,7 +986,7 @@ if [ -n "$GCP_VM_NAME" ]; then
                 --quiet >/dev/null 2>&1 || true
             echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' verified & updated!${NC}"
         else
-            gcloud compute firewall-rules create "$FIREWALL_NAME" \
+            if gcloud compute firewall-rules create "$FIREWALL_NAME" \
                 ${GCP_PROJECT:+--project="$GCP_PROJECT"} \
                 --direction=INGRESS \
                 --priority=1000 \
@@ -992,11 +996,18 @@ if [ -n "$GCP_VM_NAME" ]; then
                 --source-ranges=0.0.0.0/0 \
                 --target-tags="$TARGET_TAGS" \
                 --description="Automated DevOps Platform Firewall Rules" \
-                --quiet >/dev/null 2>&1 || true
-            echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' created and applied!${NC}"
+                --quiet 2>/dev/null; then
+                echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' created and applied!${NC}"
+            else
+                echo -e "${YELLOW}[!] Note: Could not auto-create GCP firewall rule from inside VM (service account lacks compute.firewalls.create).${NC}"
+                echo -e "${YELLOW}[!] If http://${EXTERNAL_IP:-<VM_IP>}:8080 does not open, run this on your local machine or Google Cloud Shell:${NC}"
+                echo -e "    ${BOLD}gcloud compute firewall-rules create ${FIREWALL_NAME} --allow=${PORT_SPEC} --source-ranges=0.0.0.0/0 --target-tags=${TARGET_TAGS}${NC}"
+            fi
         fi
     else
-        echo -e "${YELLOW}[!] gcloud CLI is not available in the VM environment.${NC}"
+        echo -e "${YELLOW}[!] gcloud CLI is not installed in the VM environment.${NC}"
+        echo -e "${YELLOW}[!] To open port 8080 from outside, run this command from your laptop/Cloud Shell:${NC}"
+        echo -e "    ${BOLD}gcloud compute firewall-rules create ${FIREWALL_NAME} --allow=tcp:22,tcp:80,tcp:443,tcp:8080,tcp:30751,tcp:30752 --source-ranges=0.0.0.0/0 --target-tags=${TARGET_TAGS}${NC}"
     fi
 else
     echo -e "${YELLOW}[*] Standalone Ubuntu environment (non-GCP). Local UFW firewall rules are active.${NC}"
