@@ -1,0 +1,75 @@
+name: Continuous Integration & Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    name: Lint, Test & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-cov black flake8
+
+      - name: Code Quality & Linting
+        run: |
+          black --check src tests || true
+          flake8 src tests --max-line-length=120 --ignore=E501,W503 || true
+
+      - name: Run Unit Tests with Coverage
+        run: |
+          pytest tests/ -v --cov=src --cov-report=xml
+
+      - name: Validate Kubeflow Pipeline Compilation
+        run: |
+          python kubeflow/pipeline.py
+
+      - name: Validate Kubernetes Manifests with Kustomize
+        run: |
+          kubectl kustomize k8s/overlays/aws-primary
+          kubectl kustomize k8s/overlays/gcp-failover
+
+  docker-build-and-scan:
+    name: Container Build & Vulnerability Scan
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: actions/docker-buildx-action@v3
+
+      - name: Build Inference API Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.api
+          push: false
+          tags: smartmfg/smart-manufacturing-api:${{ github.sha }}
+          load: true
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'smartmfg/smart-manufacturing-api:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
