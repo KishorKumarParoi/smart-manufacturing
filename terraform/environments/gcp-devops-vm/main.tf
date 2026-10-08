@@ -16,24 +16,29 @@ provider "google" {
 
 # 1. Firewall rules for DevOps tools
 resource "google_compute_firewall" "devops_ports" {
-  name    = "allow-devops-tools"
+  name    = "allow-devops-platform"
   network = "default"
 
   allow {
     protocol = "tcp"
     ports = [
-      "22",    # SSH
-      "80",    # HTTP
-      "443",   # HTTPS
-      "8080",  # Jenkins
-      "8081",  # Nexus
-      "9000",  # SonarQube
-      "30080"  # ArgoCD Web UI NodePort
+      "22",          # SSH
+      "80",          # HTTP
+      "443",         # HTTPS
+      "8000",        # Smart Manufacturing API
+      "8080",        # Jenkins Web UI
+      "8081",        # Nexus Repository
+      "9000",        # SonarQube
+      "30080",       # ArgoCD Web UI NodePort
+      "30751",       # ArgoCD Web HTTP NodePort
+      "30752",       # ArgoCD Web HTTPS NodePort
+      "50000",       # Jenkins Agent JNLP
+      "30000-32767"  # Kubernetes NodePort Range
     ]
   }
 
   source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["devops-vm"]
+  target_tags   = ["allow-devops-platform", "devops-control-plane", "devops-vm"]
 }
 
 # 2. GCP Compute VM Instance
@@ -42,7 +47,7 @@ resource "google_compute_instance" "devops_node" {
   machine_type = var.machine_type
   zone         = var.zone
 
-  tags = ["devops-vm", "http-server", "https-server"]
+  tags = ["allow-devops-platform", "devops-control-plane", "devops-vm", "http-server", "https-server"]
 
   boot_disk {
     initialize_params {

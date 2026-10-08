@@ -132,7 +132,7 @@ log_success "Nexus container started on port 8081!"
 # 9. Deploy ArgoCD on Kubernetes
 log_step "9/10: Deploying ArgoCD in Kubernetes & exposing via NodePort (Port 30080)..."
 kubectl create namespace argocd || true
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 # Patch ArgoCD server to NodePort 30080 for web access
 kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort", "ports": [{"port": 80, "targetPort": 8080, "nodePort": 30080}]}}'
@@ -144,19 +144,56 @@ rm argocd-linux-amd64
 log_success "ArgoCD deployed in Kubernetes and accessible at NodePort 30080!"
 
 # 10. Install CircleCI CLI
-log_step "10/10: Installing CircleCI CLI & Runner toolchain..."
+log_step "10/11: Installing CircleCI CLI & Runner toolchain..."
 curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/master/install.sh | sudo bash
 log_success "CircleCI CLI installed ($(circleci version))"
+
+# 11. Configure Firewall Rules (GCP "allow-devops-platform" & UFW)
+log_step "11/11: Applying automatic firewall rules ('allow-devops-platform')..."
+FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
+TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
+REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
+
+# Local UFW
+sudo apt-get install -y --no-install-recommends ufw >/dev/null 2>&1 || true
+for p in "${REQUIRED_PORTS[@]}"; do
+    sudo ufw allow "${p}/tcp" comment "DevOps ${p}" >/dev/null 2>&1 || true
+done
+sudo ufw allow 30000:32767/tcp comment "Kubernetes NodePort Range" >/dev/null 2>&1 || true
+if sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+    sudo ufw reload >/dev/null 2>&1 || true
+fi
+
+# GCP Metadata detection and tagging
+GCP_METADATA_HEADER="Metadata-Flavor: Google"
+GCP_METADATA_BASE="http://metadata.google.internal/computeMetadata/v1"
+GCP_VM_NAME=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/name" 2>/dev/null || true)
+if [ -n "$GCP_VM_NAME" ]; then
+    GCP_ZONE_RAW=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/zone" 2>/dev/null || true)
+    GCP_ZONE=$(echo "$GCP_ZONE_RAW" | awk -F/ '{print $NF}')
+    GCP_PROJECT=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
+    if command -v gcloud >/dev/null 2>&1; then
+        gcloud compute instances add-tags "$GCP_VM_NAME" --zone="$GCP_ZONE" --tags="$TARGET_TAGS" --quiet >/dev/null 2>&1 || true
+        PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:8000,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
+        if gcloud compute firewall-rules describe "$FIREWALL_NAME" ${GCP_PROJECT:+--project="$GCP_PROJECT"} >/dev/null 2>&1; then
+            gcloud compute firewall-rules update "$FIREWALL_NAME" ${GCP_PROJECT:+--project="$GCP_PROJECT"} --allow="$PORT_SPEC" --target-tags="$TARGET_TAGS" --quiet >/dev/null 2>&1 || true
+        fi
+    fi
+    log_success "GCP tags '${TARGET_TAGS}' and firewall rule '${FIREWALL_NAME}' configured!"
+else
+    log_success "Local UFW firewall rules configured!"
+fi
 
 # Display Summary
 echo -e "\n${GREEN}${BOLD}==================================================================${NC}"
 echo -e "${GREEN}${BOLD} ✓ ALL DEVOPS SERVICES DEPLOYED SUCCESSFULLY!                     ${NC}"
 echo -e "${GREEN}${BOLD}==================================================================${NC}"
 echo -e "Access the services via your VM's External IP:"
-echo -e "  • ${BOLD}Jenkins:${NC}    http://<EXTERNAL_IP>:8080"
-echo -e "  • ${BOLD}SonarQube:${NC}  http://<EXTERNAL_IP>:9000 (Default: admin / admin)"
-echo -e "  • ${BOLD}Nexus:${NC}      http://<EXTERNAL_IP>:8081"
-echo -e "  • ${BOLD}ArgoCD:${NC}     http://<EXTERNAL_IP>:30080"
+echo -e "  • ${BOLD}Jenkins:${NC}       http://<EXTERNAL_IP>:8080"
+echo -e "  • ${BOLD}SonarQube:${NC}     http://<EXTERNAL_IP>:9000 (Default: admin / admin)"
+echo -e "  • ${BOLD}Nexus:${NC}         http://<EXTERNAL_IP>:8081"
+echo -e "  • ${BOLD}ArgoCD:${NC}        http://<EXTERNAL_IP>:30080  (or :30751)"
+echo -e "  • ${BOLD}Firewall Rule:${NC} ${GREEN}${FIREWALL_NAME}${NC}"
 echo -e "\nTo view initial passwords:"
 echo -e "  ${CYAN}Jenkins Admin Password:${NC} sudo cat /var/jenkins_home/secrets/initialAdminPassword"
 echo -e "  ${CYAN}Nexus Admin Password:${NC}   sudo cat /var/nexus-data/admin.password"

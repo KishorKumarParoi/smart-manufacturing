@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ALL-IN-ONE UBUNTU DEVOPS SETUP SCRIPT
-# Docker | Minikube | Kubectl | ArgoCD CLI & Server | Jenkins (Containerized)
+# Docker | Minikube | Kubectl | ArgoCD CLI & Server | Jenkins | Firewall Rules
 # Target OS: Ubuntu 20.04 / 22.04 / 24.04 LTS (x86_64)
 # ==============================================================================
 
@@ -19,7 +19,7 @@ header() {
     cat << "EOF"
 ==================================================================
   DEVOPS PLATFORM AUTOMATED SETUP FOR UBUNTU
-  Docker | Minikube | Kubectl | ArgoCD | Jenkins (in Minikube Network)
+  Docker | Minikube | Kubectl | ArgoCD | Jenkins | Firewall Rules
 ==================================================================
 EOF
     echo -e "${NC}"
@@ -129,7 +129,7 @@ kubectl get nodes
 # ==============================================================================
 echo -e "\n${CYAN}[5/6] Deploying ArgoCD on Kubernetes (Minikube)...${NC}"
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 echo -e "${YELLOW}[*] Waiting for ArgoCD server deployment to be ready...${NC}"
 kubectl rollout status deployment/argocd-server -n argocd --timeout=180s || true
@@ -201,6 +201,116 @@ for i in {1..12}; do
 done
 
 # ==============================================================================
+# 7. Automatic Firewall Configuration (GCP "allow-devops-platform" & UFW)
+# ==============================================================================
+echo -e "\n${CYAN}[7/7] Configuring automatic firewall rules ('allow-devops-platform') & persistent exposure...${NC}"
+
+FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
+TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
+REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
+
+# A. Configure Local OS Firewall (UFW)
+echo -e "${YELLOW}[*] Configuring Ubuntu UFW local firewall for DevOps ports...${NC}"
+command -v ufw >/dev/null 2>&1 || apt-get install -y --no-install-recommends ufw
+for port in "${REQUIRED_PORTS[@]}"; do
+    ufw allow "${port}/tcp" comment "DevOps Platform ${port}" >/dev/null 2>&1 || true
+done
+ufw allow 30000:32767/tcp comment "Kubernetes NodePort Range" >/dev/null 2>&1 || true
+
+if ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw reload >/dev/null 2>&1 || true
+    echo -e "${GREEN}[✓] UFW firewall active: all DevOps ports opened.${NC}"
+else
+    echo -e "${GREEN}[✓] UFW firewall rules registered for all DevOps ports.${NC}"
+fi
+
+# B. Configure ArgoCD persistent port-forwarding systemd daemon (0.0.0.0:30751 -> argocd-server:80)
+echo -e "${YELLOW}[*] Setting up persistent background port-forwarding for ArgoCD (Port 30751)...${NC}"
+cat << 'EOF_SVC' > /etc/systemd/system/argocd-port-forward.service
+[Unit]
+Description=ArgoCD Web Server Port Forward Service (0.0.0.0:30751 -> 80)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=root
+Environment="KUBECONFIG=/root/.kube/config"
+ExecStart=/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/argocd-server 30751:80 -n argocd
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF_SVC
+
+systemctl daemon-reload
+systemctl enable argocd-port-forward.service >/dev/null 2>&1 || true
+systemctl restart argocd-port-forward.service >/dev/null 2>&1 || true
+echo -e "${GREEN}[✓] ArgoCD background port-forward service active on 0.0.0.0:30751!${NC}"
+
+# C. Automatic Cloud Firewall (GCP)
+GCP_METADATA_HEADER="Metadata-Flavor: Google"
+GCP_METADATA_BASE="http://metadata.google.internal/computeMetadata/v1"
+GCP_VM_NAME=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/name" 2>/dev/null || true)
+
+if [ -n "$GCP_VM_NAME" ]; then
+    GCP_ZONE_RAW=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/zone" 2>/dev/null || true)
+    GCP_ZONE=$(echo "$GCP_ZONE_RAW" | awk -F/ '{print $NF}')
+    GCP_PROJECT=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
+    
+    echo -e "${GREEN}[✓] Google Cloud VM detected:${NC} ${BOLD}${GCP_VM_NAME}${NC} (Zone: ${GCP_ZONE}, Project: ${GCP_PROJECT})"
+
+    # Ensure gcloud CLI is available
+    if ! command -v gcloud >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Installing Google Cloud SDK CLI...${NC}"
+        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list >/dev/null 2>&1 || true
+        curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg --yes >/dev/null 2>&1 || true
+        apt-get update -y >/dev/null 2>&1 && apt-get install -y google-cloud-sdk >/dev/null 2>&1 || true
+    fi
+
+    # Attach firewall target tags to this instance
+    if command -v gcloud >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Attaching network tags '${TARGET_TAGS}' to GCP instance '${GCP_VM_NAME}'...${NC}"
+        gcloud compute instances add-tags "$GCP_VM_NAME" \
+            --zone="$GCP_ZONE" \
+            --tags="$TARGET_TAGS" \
+            --quiet >/dev/null 2>&1 || true
+
+        echo -e "${YELLOW}[*] Synchronizing GCP firewall rule '${FIREWALL_NAME}'...${NC}"
+        PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:8000,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
+        
+        if gcloud compute firewall-rules describe "$FIREWALL_NAME" ${GCP_PROJECT:+--project="$GCP_PROJECT"} >/dev/null 2>&1; then
+            gcloud compute firewall-rules update "$FIREWALL_NAME" \
+                ${GCP_PROJECT:+--project="$GCP_PROJECT"} \
+                --allow="$PORT_SPEC" \
+                --target-tags="$TARGET_TAGS" \
+                --quiet >/dev/null 2>&1 || true
+            echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' verified & updated with all DevOps ports!${NC}"
+        else
+            gcloud compute firewall-rules create "$FIREWALL_NAME" \
+                ${GCP_PROJECT:+--project="$GCP_PROJECT"} \
+                --direction=INGRESS \
+                --priority=1000 \
+                --network=default \
+                --action=ALLOW \
+                --rules="$PORT_SPEC" \
+                --source-ranges=0.0.0.0/0 \
+                --target-tags="$TARGET_TAGS" \
+                --description="Automated DevOps Platform Firewall Rules" \
+                --quiet >/dev/null 2>&1 || true
+            echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' created and applied to this VM!${NC}"
+        fi
+    else
+        echo -e "${YELLOW}[!] gcloud CLI is not installed or lacks credentials on this VM.${NC}"
+    fi
+else
+    echo -e "${YELLOW}[*] Standalone Ubuntu environment (non-GCP). Local UFW firewall rules are active.${NC}"
+fi
+
+# ==============================================================================
 # Summary & Next Steps
 # ==============================================================================
 EXTERNAL_IP=$(curl -s -4 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
@@ -213,6 +323,8 @@ echo -e "  • ${BOLD}Minikube:${NC}      $(minikube version --short)"
 echo -e "  • ${BOLD}Kubectl:${NC}       $(kubectl version --client --output=yaml | grep gitVersion | head -n 1 | awk '{print $2}')"
 echo -e "  • ${BOLD}Jenkins:${NC}       http://${EXTERNAL_IP}:8080"
 echo -e "  • ${BOLD}ArgoCD Web:${NC}    http://${EXTERNAL_IP}:30751  (or https://${EXTERNAL_IP}:30752)"
+echo -e "  • ${BOLD}Firewall Rule:${NC} ${GREEN}${FIREWALL_NAME}${NC} (Ports: 22, 80, 443, 8080, 30751, 30752, 50000, 30000-32767)"
+echo -e "  • ${BOLD}Network Tags:${NC}  ${TARGET_TAGS}"
 
 echo -e "\n${CYAN}${BOLD}🔑 Credentials Summary:${NC}"
 echo -e "  ${BOLD}Jenkins Admin Password:${NC}"
