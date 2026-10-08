@@ -213,4 +213,6 @@ def health():
 
 if __name__ == "__main__":
     get_artifacts()
-    app.run(debug=True, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 5000))
+    debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in ("1", "true")
+    app.run(debug=debug_mode, host="0.0.0.0", port=port)

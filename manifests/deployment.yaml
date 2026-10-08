@@ -2,6 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mlops-app
+  labels:
+    app: mlops-app
+    tier: api
 spec:
   replicas: 2
   selector:
@@ -11,9 +14,38 @@ spec:
     metadata:
       labels:
         app: mlops-app
+        tier: api
     spec:
       containers:
       - name: mlops-app
-        image: dataguru97/gitops-project:latest
+        image: kishorkumarparoi/smart-manufacturing:latest
+        imagePullPolicy: Always
         ports:
-        - containerPort: 5000
+        - name: http
+          containerPort: 5000
+        env:
+        - name: PORT
+          value: "5000"
+        - name: FLASK_DEBUG
+          value: "0"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ALL-IN-ONE UBUNTU DEVOPS SETUP SCRIPT (IDEMPOTENT & PRODUCTION-READY)
-# Docker | Minikube | Kubectl | ArgoCD CLI & Server | Jenkins (with Login) | Firewall
+# Docker | Minikube | Kubectl | ArgoCD CLI & Server | Jenkins | Git/GitHub | Firewall
 # Target OS: Ubuntu 20.04 / 22.04 / 24.04 LTS (x86_64)
 # ==============================================================================
 
@@ -19,7 +19,7 @@ header() {
     cat << "EOF"
 ==================================================================
   DEVOPS PLATFORM AUTOMATED SETUP FOR UBUNTU
-  Docker | Minikube | Kubectl | ArgoCD | Jenkins | Firewall Rules
+  Docker | Minikube | Kubectl | ArgoCD | Jenkins | Git/GitHub | Firewall
 ==================================================================
 EOF
     echo -e "${NC}"
@@ -40,17 +40,22 @@ USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 # Configuration defaults (can be overridden via environment variables)
 JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER:-admin}"
 JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD:-admin123}"
+GIT_USER_NAME="${GIT_USER_NAME:-Kishor Kumar Paroi}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-1703053@student.ruet.ac.bd}"
+GITHUB_USERNAME="${GITHUB_USERNAME:-KishorKumarParoi}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
 TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
 REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
 
 echo -e "${YELLOW}[*] Configuring DevOps toolchain for user:${NC} ${BOLD}${REAL_USER}${NC}"
 echo -e "${YELLOW}[*] Jenkins admin account:${NC} ${BOLD}${JENKINS_ADMIN_USER}${NC}"
+echo -e "${YELLOW}[*] Git & GitHub profile:${NC} ${BOLD}${GITHUB_USERNAME} (${GIT_USER_EMAIL})${NC}"
 
 # ==============================================================================
 # 1. Base Packages & Dependencies (Idempotent)
 # ==============================================================================
-echo -e "\n${CYAN}[1/7] Checking base utilities...${NC}"
+echo -e "\n${CYAN}[1/8] Checking base utilities...${NC}"
 REQUIRED_PKGS=(apt-transport-https ca-certificates curl gnupg lsb-release software-properties-common wget conntrack git jq ufw)
 MISSING_PKGS=()
 
@@ -72,7 +77,7 @@ fi
 # ==============================================================================
 # 2. Docker CE & Permissions (Idempotent)
 # ==============================================================================
-echo -e "\n${CYAN}[2/7] Checking Docker CE installation...${NC}"
+echo -e "\n${CYAN}[2/8] Checking Docker CE installation...${NC}"
 
 if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
     echo -e "${GREEN}[✓] Docker is already installed and running: ${NC}$(docker --version)"
@@ -104,7 +109,7 @@ chmod 666 /var/run/docker.sock 2>/dev/null || true
 # ==============================================================================
 # 3. Kubectl & ArgoCD CLI on Host (Idempotent)
 # ==============================================================================
-echo -e "\n${CYAN}[3/7] Checking Kubectl and ArgoCD CLI...${NC}"
+echo -e "\n${CYAN}[3/8] Checking Kubectl and ArgoCD CLI...${NC}"
 
 # Kubectl
 if command -v kubectl >/dev/null 2>&1; then
@@ -137,9 +142,99 @@ if ! grep -q "alias k=kubectl" "$USER_HOME/.bashrc" 2>/dev/null; then
 fi
 
 # ==============================================================================
-# 4. Minikube Cluster (Docker Driver - Idempotent)
+# 4. Configure Git, GitHub CLI & Credentials on Host (Idempotent)
 # ==============================================================================
-echo -e "\n${CYAN}[4/7] Checking Minikube installation & cluster state...${NC}"
+echo -e "\n${CYAN}[4/8] Configuring Git & GitHub authentication (${GITHUB_USERNAME})...${NC}"
+
+# A. Configure Git global user identity
+echo -e "${YELLOW}[*] Setting up Git configuration for user ${REAL_USER}...${NC}"
+sudo -u "$REAL_USER" git config --global user.name "$GIT_USER_NAME"
+sudo -u "$REAL_USER" git config --global user.email "$GIT_USER_EMAIL"
+sudo -u "$REAL_USER" git config --global init.defaultBranch main
+sudo -u "$REAL_USER" git config --global credential.helper store
+
+# Also set for root user
+git config --global user.name "$GIT_USER_NAME"
+git config --global user.email "$GIT_USER_EMAIL"
+git config --global init.defaultBranch main
+git config --global credential.helper store
+echo -e "${GREEN}[✓] Git global identity configured: ${BOLD}${GIT_USER_NAME} <${GIT_USER_EMAIL}>${NC}"
+
+# B. Install GitHub CLI (gh)
+if command -v gh >/dev/null 2>&1; then
+    echo -e "${GREEN}[✓] GitHub CLI (gh) is already installed: ${NC}$(gh --version | head -n 1)"
+else
+    echo -e "${YELLOW}[*] Installing GitHub CLI (gh)...${NC}"
+    mkdir -p -m 755 /etc/apt/keyrings
+    wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    apt-get update -y
+    apt-get install -y gh
+    echo -e "${GREEN}[✓] GitHub CLI installed: ${NC}$(gh --version | head -n 1)"
+fi
+
+# C. Setup SSH Key for GitHub & known_hosts
+SSH_DIR="$USER_HOME/.ssh"
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+if [ ! -f "$SSH_DIR/id_ed25519" ] && [ ! -f "$SSH_DIR/id_rsa" ]; then
+    echo -e "${YELLOW}[*] Generating ED25519 SSH key for GitHub authentication...${NC}"
+    sudo -u "$REAL_USER" ssh-keygen -t ed25519 -C "$GIT_USER_EMAIL" -f "$SSH_DIR/id_ed25519" -N ""
+    chown -R "$REAL_USER:$REAL_USER" "$SSH_DIR"
+    echo -e "${GREEN}[✓] Generated SSH key: ${SSH_DIR}/id_ed25519.pub${NC}"
+else
+    echo -e "${GREEN}[✓] SSH key already present in ${SSH_DIR}.${NC}"
+fi
+
+# Register GitHub in known_hosts to prevent interactive host verification prompts
+touch "$SSH_DIR/known_hosts"
+if ! grep -q "github.com" "$SSH_DIR/known_hosts" 2>/dev/null; then
+    ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$SSH_DIR/known_hosts" 2>/dev/null || true
+    chown "$REAL_USER:$REAL_USER" "$SSH_DIR/known_hosts"
+    echo -e "${GREEN}[✓] Added github.com to ${SSH_DIR}/known_hosts.${NC}"
+fi
+
+# D. Git Credential Helper Store & GitHub Token Authentication
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo -e "${YELLOW}[*] Storing GitHub credentials in git-credentials store...${NC}"
+    CRED_ENTRY="https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com"
+
+    # Store for REAL_USER
+    touch "$USER_HOME/.git-credentials"
+    if grep -q "github.com" "$USER_HOME/.git-credentials" 2>/dev/null; then
+        sed -i "s|https://.*github\.com.*|${CRED_ENTRY}|" "$USER_HOME/.git-credentials"
+    else
+        echo "$CRED_ENTRY" >> "$USER_HOME/.git-credentials"
+    fi
+    chmod 600 "$USER_HOME/.git-credentials"
+    chown "$REAL_USER:$REAL_USER" "$USER_HOME/.git-credentials"
+
+    # Store for root
+    touch /root/.git-credentials
+    if grep -q "github.com" /root/.git-credentials 2>/dev/null; then
+        sed -i "s|https://.*github\.com.*|${CRED_ENTRY}|" /root/.git-credentials
+    else
+        echo "$CRED_ENTRY" >> /root/.git-credentials
+    fi
+    chmod 600 /root/.git-credentials
+
+    # Login to GitHub CLI non-interactively
+    if command -v gh >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Authenticating GitHub CLI (${GITHUB_USERNAME})...${NC}"
+        echo "$GITHUB_TOKEN" | sudo -u "$REAL_USER" gh auth login --with-token 2>/dev/null || true
+        sudo -u "$REAL_USER" gh auth setup-git 2>/dev/null || true
+    fi
+    echo -e "${GREEN}[✓] GitHub credentials stored & authenticated for user '${GITHUB_USERNAME}'!${NC}"
+else
+    echo -e "${YELLOW}[i] GITHUB_TOKEN not supplied. Git configured with store helper; SSH key is ready.${NC}"
+fi
+
+# ==============================================================================
+# 5. Minikube Cluster (Docker Driver - Idempotent)
+# ==============================================================================
+echo -e "\n${CYAN}[5/8] Checking Minikube installation & cluster state...${NC}"
 
 if command -v minikube >/dev/null 2>&1; then
     echo -e "${GREEN}[✓] Minikube binary is already installed: ${NC}$(minikube version --short 2>/dev/null || echo 'installed')"

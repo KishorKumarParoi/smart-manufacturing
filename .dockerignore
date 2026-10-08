@@ -1,0 +1,23 @@
+.git
+.gitignore
+.github
+.circleci
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+.coverage
+htmlcov
+logs/
+1. ALL MATERIALS - 9 - NEW/
+terraform/
+ansible/
+tests/
+*.md
+Makefile
+uv.lock
+smart_manufacturing.egg-info/
