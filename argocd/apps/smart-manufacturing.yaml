@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: smart-manufacturing-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/KishorKumarParoi/smart-manufacturing.git
+    targetRevision: HEAD
+    path: k8s/overlays/aws-primary
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: smart-manufacturing
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mlflow-server
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/KishorKumarParoi/smart-manufacturing.git
+    targetRevision: HEAD
+    path: mlflow/k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: smart-manufacturing
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

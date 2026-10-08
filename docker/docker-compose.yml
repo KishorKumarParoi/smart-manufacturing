@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # 1. MinIO (S3-compatible local artifact store for MLflow)
+  minio:
+    image: minio/minio:latest
+    container_name: smart-mfg-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+  # 2. MLflow Tracking Server
+  mlflow:
+    build:
+      context: ..
+      dockerfile: mlflow/Dockerfile
+    container_name: smart-mfg-mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      BACKEND_STORE_URI: sqlite:////mlflow/mlflow.db
+      ARTIFACT_ROOT: s3://smart-mfg-mlops-artifacts-us-east-1/mlflow
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadminpassword
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    depends_on:
+      - minio
+    volumes:
+      - mlflow_data:/mlflow
+
+  # 3. Primary Inference Cluster (Simulating AWS us-east-1)
+  api-primary:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: smart-mfg-api-aws-primary
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: staging
+      PRIMARY_CLOUD: aws
+      CURRENT_CLOUD: aws
+      CURRENT_REGION: us-east-1
+      DEVICE: cpu
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - mlflow
+
+  # 4. Secondary Failover Inference Cluster (Simulating GCP us-central1)
+  api-secondary:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: smart-mfg-api-gcp-failover
+    ports:
+      - "8001:8000"
+    environment:
+      APP_ENV: staging
+      PRIMARY_CLOUD: aws
+      CURRENT_CLOUD: gcp
+      CURRENT_REGION: us-central1
+      DEVICE: cpu
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - mlflow
+
+  # 5. Multi-Cloud Health Probe & Failover Daemon
+  failover-prober:
+    image: python:3.11-slim
+    container_name: smart-mfg-failover-prober
+    volumes:
+      - ../src:/app/src
+    working_dir: /app
+    command: >
+      sh -c "pip install requests &&
+             python -m src.failover.health_probe --primary http://api-primary:8000/health --secondary http://api-secondary:8000/health"
+    depends_on:
+      - api-primary
+      - api-secondary
+
+volumes:
+  minio_data:
+  mlflow_data:

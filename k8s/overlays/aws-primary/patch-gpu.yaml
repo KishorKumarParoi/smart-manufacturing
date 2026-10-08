@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-manufacturing-api
+  namespace: smart-manufacturing
+spec:
+  template:
+    spec:
+      nodeSelector:
+        node.kubernetes.io/instance-type: g4dn.xlarge
+      containers:
+        - name: inference-api
+          env:
+            - name: CURRENT_CLOUD
+              value: "aws"
+            - name: CURRENT_REGION
+              value: "us-east-1"
+            - name: AWS_S3_BUCKET_NAME
+              value: "smart-mfg-mlops-artifacts-us-east-1"

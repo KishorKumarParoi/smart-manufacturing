@@ -1,0 +1,14 @@
+---
+- name: Verify Multi-Cloud Health and Automated Failover Status
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Run Multi-Cloud Health Probe
+      ansible.builtin.command: python3 -m src.failover.health_probe --once
+      register: probe_result
+      changed_when: false
+
+    - name: Print Probe Results
+      ansible.builtin.debug:
+        var: probe_result.stdout_lines

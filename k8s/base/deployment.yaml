@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-manufacturing-api
+  namespace: smart-manufacturing
+  labels:
+    app: smart-manufacturing-api
+    tier: inference-engine
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: smart-manufacturing-api
+  template:
+    metadata:
+      labels:
+        app: smart-manufacturing-api
+        tier: inference-engine
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: accelerator
+                    operator: In
+                    values: ["nvidia-gpu", "nvidia-tesla-t4", "nvidia-a10g"]
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "sku"
+          operator: "Equal"
+          value: "gpu"
+          effect: "NoSchedule"
+      containers:
+        - name: inference-api
+          image: ghcr.io/kishorkumarparoi/smart-manufacturing-api:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: APP_ENV
+              value: "production"
+            - name: DEVICE
+              value: "cuda"
+            - name: PRIMARY_CLOUD
+              value: "aws"
+            - name: SECONDARY_CLOUD
+              value: "gcp"
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow.smart-manufacturing.svc.cluster.local:5000"
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2

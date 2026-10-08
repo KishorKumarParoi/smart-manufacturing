@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: smart-manufacturing
+  labels:
+    app.kubernetes.io/part-of: smart-manufacturing
+    istio-injection: enabled

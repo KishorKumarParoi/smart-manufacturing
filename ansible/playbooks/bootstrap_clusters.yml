@@ -1,0 +1,34 @@
+---
+- name: Bootstrap Multi-Cloud Kubernetes Clusters with NVIDIA GPU Operator & Ingress
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Ensure smart-manufacturing namespace exists
+      ansible.builtin.command: kubectl create namespace smart-manufacturing --dry-run=client -o yaml | kubectl apply -f -
+      register: ns_out
+      changed_when: "'created' in ns_out.stdout"
+
+    - name: Add Helm Repositories (NVIDIA & ArgoCD)
+      ansible.builtin.shell: |
+        helm repo add nvidia https://helm.ngc.nvidia.com/nvidia --force-update
+        helm repo add argo https://argoproj.github.io/argo-helm --force-update
+        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-update
+        helm repo update
+
+    - name: Install Ingress-NGINX controller
+      ansible.builtin.shell: |
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx --create-namespace \
+          --set controller.replicaCount=2
+
+    - name: Install NVIDIA GPU Operator
+      ansible.builtin.shell: |
+        helm upgrade --install gpu-operator nvidia/gpu-operator \
+          -n gpu-operator --create-namespace \
+          -f ../k8s/gpu-operator/values.yaml
+      ignore_errors: yes
+
+    - name: Display bootstrap completion
+      ansible.builtin.debug:
+        msg: "Kubernetes cluster bootstrap and GPU operator deployment finished."

@@ -1,0 +1,32 @@
+# NVIDIA GPU Operator Helm values for multi-cloud Kubernetes clusters
+operator:
+  defaultRuntime: containerd
+
+driver:
+  enabled: true
+  useOpenKernelModules: false
+  repository: nvcr.io/nvidia
+  version: "535.154.05"
+
+toolkit:
+  enabled: true
+
+devicePlugin:
+  enabled: true
+  config:
+    name: "gpu-plugin-config"
+    default: "any"
+
+dcgmExporter:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+
+migManager:
+  enabled: false
+
+nodeStatusExporter:
+  enabled: true
+
+gfd:
+  enabled: true

@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-manufacturing-api
+  namespace: smart-manufacturing
+spec:
+  template:
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-accelerator: nvidia-tesla-t4
+      containers:
+        - name: inference-api
+          env:
+            - name: CURRENT_CLOUD
+              value: "gcp"
+            - name: CURRENT_REGION
+              value: "us-central1"
+            - name: GCP_GCS_BUCKET_NAME
+              value: "smart-mfg-mlops-artifacts-us-central1"

@@ -1,0 +1,31 @@
+---
+- name: Deploy and Configure ArgoCD for GitOps Continuous Delivery
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Create argocd namespace
+      ansible.builtin.command: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+      register: argo_ns
+      changed_when: false
+
+    - name: Install ArgoCD via Helm
+      ansible.builtin.shell: |
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace argocd \
+          --set server.extraArgs="{--insecure}" \
+          --set configs.params."server.insecure"=true
+
+    - name: Apply Root App-of-Apps Application
+      ansible.builtin.command: kubectl apply -f ../argocd/root-application.yaml
+      register: app_apply
+      changed_when: "'configured' in app_apply.stdout or 'created' in app_apply.stdout"
+
+    - name: Apply Multi-Cloud ApplicationSet
+      ansible.builtin.command: kubectl apply -f ../argocd/appset-multicloud.yaml
+      register: appset_apply
+      changed_when: "'configured' in appset_apply.stdout or 'created' in appset_apply.stdout"
+
+    - name: ArgoCD deployment completed
+      ansible.builtin.debug:
+        msg: "ArgoCD installed and syncing GitOps applications from GitHub repo!"
