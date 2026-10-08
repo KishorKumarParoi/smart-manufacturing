@@ -90,14 +90,17 @@ pipeline {
         stage('Apply Kubernetes & Sync ArgoCD') {
             steps {
                 sh '''
-                    echo "[*] Applying Kubernetes manifests..."
+                    echo "[*] Applying Kubernetes manifests for ${APP_NAME}..."
                     kubectl apply -f manifests/deployment.yaml -f manifests/service.yaml
                     
-                    echo "[*] Triggering ArgoCD sync..."
+                    echo "[*] Triggering ArgoCD sync for project '${APP_NAME}'..."
                     ARGOCD_PW=$(kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || true)
                     if [ -n "$ARGOCD_PW" ] && command -v argocd >/dev/null 2>&1; then
                         argocd login localhost:30751 --username admin --password "$ARGOCD_PW" --insecure || true
-                        argocd app sync gitopsapp || argocd app sync mlops-app || true
+                        argocd app sync ${APP_NAME} \\
+                            || argocd app sync smart-manufacturing \\
+                            || argocd app sync smart-manufacturing-pipeline \\
+                            || true
                     fi
                 '''
             }
@@ -106,11 +109,17 @@ pipeline {
         stage('Healthcheck & Smoke Tests') {
             steps {
                 sh '''
-                    echo "[*] Waiting for deployment rollout..."
-                    kubectl rollout status deployment/mlops-app --timeout=120s || true
+                    echo "[*] Waiting for deployment rollout (${APP_NAME})..."
+                    kubectl rollout status deployment/${APP_NAME} --timeout=120s \\
+                        || kubectl rollout status deployment/smart-manufacturing --timeout=60s \\
+                        || true
                     
                     echo "[*] Verifying service endpoints..."
-                    kubectl get svc my-service || true
+                    kubectl get svc ${APP_NAME}-service 2>/dev/null \\
+                        || kubectl get svc smart-manufacturing-service 2>/dev/null \\
+                        || kubectl get svc my-service 2>/dev/null \\
+                        || kubectl get svc 2>/dev/null \\
+                        || true
                 '''
             }
         }
