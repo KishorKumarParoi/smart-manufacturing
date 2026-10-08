@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ALL-IN-ONE DEVOPS PLATFORM VM BOOTSTRAP SCRIPT (UBUNTU 22.04 LTS)
+# ==============================================================================
+# Deploys: Docker, Kubernetes (K3s), Helm, Jenkins, SonarQube, Nexus,
+#          ArgoCD, Terraform, Ansible, CircleCI CLI
+# ==============================================================================
+
+set -eo pipefail
+
+BOLD='\033[1m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+log_step() {
+    echo -e "\n${CYAN}${BOLD}[STEP] $1${NC}"
+}
+
+log_success() {
+    echo -e "${GREEN}${BOLD}[✓] $1${NC}"
+}
+
+# 1. Update and base packages
+log_step "1/10: Updating system packages and installing baseline utilities..."
+sudo apt-get update -y
+sudo apt-get install -y --no-install-recommends \
+    curl \
+    wget \
+    git \
+    unzip \
+    jq \
+    software-properties-common \
+    apt-transport-https \
+    ca-certificates \
+    gnupg \
+    lsb-release
+
+# Configure kernel parameters for SonarQube (Elasticsearch requirement)
+echo "Configuring kernel limits for SonarQube..."
+sudo sysctl -w vm.max_map_count=524288
+sudo sysctl -w fs.file-max=131072
+echo "vm.max_map_count=524288" | sudo tee -a /etc/sysctl.conf
+echo "fs.file-max=131072" | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+
+# 2. Install Docker & Docker Compose
+log_step "2/10: Installing Docker CE and Docker Compose Plugin..."
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER
+sudo chmod 666 /var/run/docker.sock || true
+log_success "Docker installed successfully!"
+
+# 3. Install Terraform
+log_step "3/10: Installing Terraform..."
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg --yes
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt-get update -y && sudo apt-get install -y terraform
+log_success "Terraform installed ($(terraform -version | head -n 1))"
+
+# 4. Install Ansible
+log_step "4/10: Installing Ansible..."
+sudo add-apt-repository --yes --update ppa:ansible/ansible
+sudo apt-get install -y ansible
+log_success "Ansible installed ($(ansible --version | head -n 1))"
+
+# 5. Install Kubernetes (K3s - Lightweight CNCF Kubernetes)
+log_step "5/10: Installing Kubernetes (K3s) & Kubectl..."
+curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644
+mkdir -p $HOME/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+export KUBECONFIG=$HOME/.kube/config
+
+# Install Helm
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+log_success "Kubernetes & Helm installed! Nodes: $(kubectl get nodes --no-headers | awk '{print $1, $2}')"
+
+# 6. Deploy Jenkins (Docker)
+log_step "6/10: Deploying Jenkins with Docker CLI integration on port 8080..."
+sudo mkdir -p /var/jenkins_home
+sudo chown -R 1000:1000 /var/jenkins_home
+docker run -d \
+  --name jenkins \
+  --restart always \
+  -p 8080:8080 \
+  -p 50000:50000 \
+  -v /var/jenkins_home:/var/jenkins_home \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $(which docker):/usr/bin/docker \
+  jenkins/jenkins:lts-jdk17
+log_success "Jenkins container started on port 8080!"
+
+# 7. Deploy SonarQube (Docker)
+log_step "7/10: Deploying SonarQube Community Edition on port 9000..."
+sudo mkdir -p /var/sonarqube_data /var/sonarqube_extensions /var/sonarqube_logs
+sudo chmod -R 777 /var/sonarqube_data /var/sonarqube_extensions /var/sonarqube_logs
+docker run -d \
+  --name sonarqube \
+  --restart always \
+  -p 9000:9000 \
+  -v /var/sonarqube_data:/opt/sonarqube/data \
+  -v /var/sonarqube_extensions:/opt/sonarqube/extensions \
+  -v /var/sonarqube_logs:/opt/sonarqube/logs \
+  sonarqube:community
+log_success "SonarQube container started on port 9000!"
+
+# 8. Deploy Sonatype Nexus 3 (Docker)
+log_step "8/10: Deploying Sonatype Nexus Repository Manager on port 8081..."
+sudo mkdir -p /var/nexus-data
+sudo chown -R 200:200 /var/nexus-data
+docker run -d \
+  --name nexus \
+  --restart always \
+  -p 8081:8081 \
+  -v /var/nexus-data:/nexus-data \
+  sonatype/nexus3:latest
+log_success "Nexus container started on port 8081!"
+
+# 9. Deploy ArgoCD on Kubernetes
+log_step "9/10: Deploying ArgoCD in Kubernetes & exposing via NodePort (Port 30080)..."
+kubectl create namespace argocd || true
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# Patch ArgoCD server to NodePort 30080 for web access
+kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort", "ports": [{"port": 80, "targetPort": 8080, "nodePort": 30080}]}}'
+
+# Install ArgoCD CLI
+curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+rm argocd-linux-amd64
+log_success "ArgoCD deployed in Kubernetes and accessible at NodePort 30080!"
+
+# 10. Install CircleCI CLI
+log_step "10/10: Installing CircleCI CLI & Runner toolchain..."
+curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/master/install.sh | sudo bash
+log_success "CircleCI CLI installed ($(circleci version))"
+
+# Display Summary
+echo -e "\n${GREEN}${BOLD}==================================================================${NC}"
+echo -e "${GREEN}${BOLD} ✓ ALL DEVOPS SERVICES DEPLOYED SUCCESSFULLY!                     ${NC}"
+echo -e "${GREEN}${BOLD}==================================================================${NC}"
+echo -e "Access the services via your VM's External IP:"
+echo -e "  • ${BOLD}Jenkins:${NC}    http://<EXTERNAL_IP>:8080"
+echo -e "  • ${BOLD}SonarQube:${NC}  http://<EXTERNAL_IP>:9000 (Default: admin / admin)"
+echo -e "  • ${BOLD}Nexus:${NC}      http://<EXTERNAL_IP>:8081"
+echo -e "  • ${BOLD}ArgoCD:${NC}     http://<EXTERNAL_IP>:30080"
+echo -e "\nTo view initial passwords:"
+echo -e "  ${CYAN}Jenkins Admin Password:${NC} sudo cat /var/jenkins_home/secrets/initialAdminPassword"
+echo -e "  ${CYAN}Nexus Admin Password:${NC}   sudo cat /var/nexus-data/admin.password"
+echo -e "  ${CYAN}ArgoCD Admin Password:${NC}  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo"
+echo -e "==================================================================\n"
