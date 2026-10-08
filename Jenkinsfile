@@ -6,7 +6,7 @@ pipeline {
         IMAGE_NAME = "kishorkumarparoi/smart-manufacturing"
         DOCKER_HUB_REPO = "kishorkumarparoi/smart-manufacturing"
         BUILD_TAG = "${env.BUILD_NUMBER}"
-        DOCKER_HUB_CREDENTIALS_ID = "gitops-dockerhub-token"
+        DOCKER_HUB_CREDENTIALS_ID = "dockerhub-token"
         GITHUB_CREDENTIALS_ID = "github-token"
     }
 
@@ -14,11 +14,18 @@ pipeline {
         stage('Checkout') {
             steps {
                 echo "Checking out Smart Manufacturing repository from GitHub..."
-                checkout scmGit(
-                    branches: [[name: '*/main']],
-                    extensions: [],
-                    userRemoteConfigs: [[credentialsId: "${GITHUB_CREDENTIALS_ID}", url: 'https://github.com/KishorKumarParoi/smart-manufacturing.git']]
-                )
+                script {
+                    try {
+                        checkout scmGit(
+                            branches: [[name: '*/main']],
+                            extensions: [],
+                            userRemoteConfigs: [[credentialsId: "${GITHUB_CREDENTIALS_ID}", url: 'https://github.com/KishorKumarParoi/smart-manufacturing.git']]
+                        )
+                    } catch (Exception e) {
+                        echo "[*] Standard SCM checkout fallback..."
+                        checkout scm
+                    }
+                }
                 echo "Building commit ${env.GIT_COMMIT} on branch ${env.GIT_BRANCH}"
             }
         }
@@ -111,7 +118,13 @@ pipeline {
 
     post {
         always {
-            cleanWs()
+            script {
+                try {
+                    cleanWs()
+                } catch (Throwable t) {
+                    deleteDir()
+                }
+            }
         }
         success {
             echo "Pipeline succeeded! Smart Manufacturing AI platform deployed via GitOps."

@@ -37,13 +37,27 @@ fi
 REAL_USER="${SUDO_USER:-$USER}"
 USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
 
-# Configuration defaults (can be overridden via environment variables)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${SCRIPT_DIR}/../.env" ]; then
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/../.env"
+elif [ -f "${SCRIPT_DIR}/.env" ]; then
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/.env"
+elif [ -f "${USER_HOME}/.devops.env" ]; then
+    # shellcheck disable=SC1091
+    source "${USER_HOME}/.devops.env"
+fi
+
+# Configuration defaults (can be overridden via environment variables or .env)
 JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER:-admin}"
 JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD:-admin123}"
 GIT_USER_NAME="${GIT_USER_NAME:-Kishor Kumar Paroi}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-1703053@student.ruet.ac.bd}"
 GITHUB_USERNAME="${GITHUB_USERNAME:-KishorKumarParoi}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-kishorkumarparoi}"
+DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN:-}"
 FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
 TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
 REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
@@ -51,6 +65,7 @@ REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
 echo -e "${YELLOW}[*] Configuring DevOps toolchain for user:${NC} ${BOLD}${REAL_USER}${NC}"
 echo -e "${YELLOW}[*] Jenkins admin account:${NC} ${BOLD}${JENKINS_ADMIN_USER}${NC}"
 echo -e "${YELLOW}[*] Git & GitHub profile:${NC} ${BOLD}${GITHUB_USERNAME} (${GIT_USER_EMAIL})${NC}"
+echo -e "${YELLOW}[*] DockerHub account:${NC} ${BOLD}${DOCKERHUB_USERNAME}${NC}"
 
 # ==============================================================================
 # 1. Base Packages & Dependencies (Idempotent)
@@ -106,6 +121,14 @@ if ! id -nG "$REAL_USER" | grep -qw docker; then
 fi
 chmod 666 /var/run/docker.sock 2>/dev/null || true
 
+# Authenticate host Docker daemon with DockerHub
+if [ -n "$DOCKERHUB_TOKEN" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
+    echo -e "${YELLOW}[*] Authenticating host Docker CLI with DockerHub (${DOCKERHUB_USERNAME})...${NC}"
+    echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null 2>&1 || true
+    echo "$DOCKERHUB_TOKEN" | sudo -u "$REAL_USER" docker login -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null 2>&1 || true
+    echo -e "${GREEN}[✓] DockerHub authentication configured for user '${DOCKERHUB_USERNAME}'.${NC}"
+fi
+
 # ==============================================================================
 # 3. Kubectl & ArgoCD CLI on Host (Idempotent)
 # ==============================================================================
@@ -132,6 +155,15 @@ else
     curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
     chmod +x /usr/local/bin/argocd
     echo -e "${GREEN}[✓] ArgoCD CLI installed.${NC}"
+fi
+
+# Azure CLI
+if command -v az >/dev/null 2>&1; then
+    echo -e "${GREEN}[✓] Azure CLI is already installed: ${NC}$(az version 2>/dev/null | grep -o '\"azure-cli\": \"[^\"]*\"' | head -n 1 || echo 'installed')"
+else
+    echo -e "${YELLOW}[*] Installing Azure CLI (az)...${NC}"
+    curl -sL https://aka.ms/InstallAzureCLIDeb | bash >/dev/null 2>&1 || true
+    echo -e "${GREEN}[✓] Azure CLI installed.${NC}"
 fi
 
 # Shell completion and aliases
@@ -352,8 +384,8 @@ instance.save()
 println "--> [Antigravity DevOps] Jenkins login configuration ready!"
 EOF_GROOVY
 
-# 3. Write Groovy initialization script for GitHub Credentials in Jenkins Credentials Store
-cat << 'EOF_GROOVY_GH' > "${JENKINS_HOME_HOST}/init.groovy.d/02-github-credentials.groovy"
+# 3. Write Groovy initialization script for GitHub and DockerHub Credentials in Jenkins Credentials Store
+cat << EOF_GROOVY_CREDS > "${JENKINS_HOME_HOST}/init.groovy.d/02-credentials.groovy"
 import jenkins.model.*
 import com.cloudbees.plugins.credentials.*
 import com.cloudbees.plugins.credentials.domains.*
@@ -361,21 +393,23 @@ import com.cloudbees.plugins.credentials.impl.*
 import org.jenkinsci.plugins.plaincredentials.impl.*
 import hudson.util.Secret
 
-def githubUser = System.getenv("GITHUB_USERNAME") ?: ""
-def githubToken = System.getenv("GITHUB_TOKEN") ?: ""
+def githubUser = System.getenv("GITHUB_USERNAME") ?: "${GITHUB_USERNAME}"
+def githubToken = System.getenv("GITHUB_TOKEN") ?: "${GITHUB_TOKEN}"
+def dockerhubUser = System.getenv("DOCKERHUB_USERNAME") ?: "${DOCKERHUB_USERNAME}"
+def dockerhubToken = System.getenv("DOCKERHUB_TOKEN") ?: "${DOCKERHUB_TOKEN}"
 
-if (githubToken?.trim()) {
-    println "--> [Antigravity DevOps] Initializing Jenkins GitHub Credentials for '${githubUser}'..."
-    try {
-        def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0]?.getStore()
-        if (store != null) {
-            def domain = Domain.global()
-            
-            // 1. UsernamePasswordCredentials (ID: github-token)
+println "--> [Antigravity DevOps] Initializing Jenkins Credentials (GitHub & DockerHub)..."
+try {
+    def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0]?.getStore()
+    if (store != null) {
+        def domain = Domain.global()
+
+        // 1. GitHub credentials (ID: github-token)
+        if (githubToken?.trim()) {
             def upCred = new UsernamePasswordCredentialsImpl(
                 CredentialsScope.GLOBAL,
                 "github-token",
-                "GitHub Access Token for ${githubUser}",
+                "GitHub Access Token for \${githubUser}",
                 githubUser,
                 githubToken
             )
@@ -383,12 +417,12 @@ if (githubToken?.trim()) {
             if (existingUp) { store.removeCredentials(domain, existingUp) }
             store.addCredentials(domain, upCred)
 
-            // 2. Secret text credentials (ID: github-pat)
+            // Secret text credentials (ID: github-pat)
             try {
                 def stCred = new StringCredentialsImpl(
                     CredentialsScope.GLOBAL,
                     "github-pat",
-                    "GitHub Personal Access Token for ${githubUser}",
+                    "GitHub Personal Access Token for \${githubUser}",
                     Secret.fromString(githubToken)
                 )
                 def existingSt = store.getCredentials(domain).find { it.id == "github-pat" }
@@ -396,15 +430,72 @@ if (githubToken?.trim()) {
                 store.addCredentials(domain, stCred)
             } catch (Throwable t2) {}
 
-            println "--> [Antigravity DevOps] Jenkins credentials 'github-token' & 'github-pat' registered."
+            println "--> [Antigravity DevOps] Jenkins credential 'github-token' & 'github-pat' registered successfully."
         }
-    } catch (Throwable t) {
-        println "--> [Antigravity DevOps] Note on Jenkins credentials store: " + t.message
-    }
-}
-EOF_GROOVY_GH
 
-# 4. Configure Git identity and credentials in Jenkins home
+        // 2. DockerHub credentials (ID: dockerhub-token & gitops-dockerhub-token)
+        if (dockerhubToken?.trim()) {
+            def dhCred1 = new UsernamePasswordCredentialsImpl(
+                CredentialsScope.GLOBAL,
+                "dockerhub-token",
+                "DockerHub Access Token for \${dockerhubUser}",
+                dockerhubUser,
+                dockerhubToken
+            )
+            def existingDh1 = store.getCredentials(domain).find { it.id == "dockerhub-token" }
+            if (existingDh1) { store.removeCredentials(domain, existingDh1) }
+            store.addCredentials(domain, dhCred1)
+
+            def dhCred2 = new UsernamePasswordCredentialsImpl(
+                CredentialsScope.GLOBAL,
+                "gitops-dockerhub-token",
+                "DockerHub Access Token for \${dockerhubUser} (GitOps alias)",
+                dockerhubUser,
+                dockerhubToken
+            )
+            def existingDh2 = store.getCredentials(domain).find { it.id == "gitops-dockerhub-token" }
+            if (existingDh2) { store.removeCredentials(domain, existingDh2) }
+            store.addCredentials(domain, dhCred2)
+
+            println "--> [Antigravity DevOps] Jenkins credentials 'dockerhub-token' & 'gitops-dockerhub-token' registered successfully."
+        }
+    }
+} catch (Throwable t) {
+    println "--> [Antigravity DevOps] Note on credentials store: " + t.message
+}
+EOF_GROOVY_CREDS
+
+# 4. Write Groovy initialization script for automated Pipeline Job creation (smart-manufacturing-pipeline)
+cat << EOF_GROOVY_JOB > "${JENKINS_HOME_HOST}/init.groovy.d/03-create-pipeline-job.groovy"
+import jenkins.model.*
+import org.jenkinsci.plugins.workflow.job.*
+import org.jenkinsci.plugins.workflow.cps.*
+import hudson.plugins.git.*
+
+def jobName = "smart-manufacturing-pipeline"
+def repoUrl = "https://github.com/${GITHUB_USERNAME}/smart-manufacturing.git"
+def instance = Jenkins.getInstance()
+
+try {
+    def job = instance.getItem(jobName)
+    if (job == null) {
+        job = instance.createProject(WorkflowJob, jobName)
+        println "--> [Antigravity DevOps] Created Pipeline job '\${jobName}'"
+    }
+    def scm = new GitSCM(repoUrl)
+    scm.branches = [new BranchSpec("*/main")]
+    scm.userRemoteConfigs = [new UserRemoteConfig(repoUrl, null, null, "github-token")]
+    def flowDef = new CpsScmFlowDefinition(scm, "Jenkinsfile")
+    flowDef.setLightweight(true)
+    job.setDefinition(flowDef)
+    job.save()
+    println "--> [Antigravity DevOps] Pipeline job '\${jobName}' configured with Git SCM & Jenkinsfile."
+} catch (Throwable t) {
+    println "--> [Antigravity DevOps] Pipeline job note: " + t.message
+}
+EOF_GROOVY_JOB
+
+# 5. Configure Git identity and credentials in Jenkins home
 cat << EOF_GIT > "${JENKINS_HOME_HOST}/.gitconfig"
 [user]
 	name = ${GIT_USER_NAME}
@@ -435,7 +526,7 @@ chmod 700 "${JENKINS_HOME_HOST}/.ssh" 2>/dev/null || true
 chmod 600 "${JENKINS_HOME_HOST}/.ssh/id_ed25519" 2>/dev/null || true
 chown -R 1000:1000 "${JENKINS_HOME_HOST}/.ssh" 2>/dev/null || true
 
-# 5. Manage Jenkins Container State
+# 6. Manage Jenkins Container State
 JENKINS_RUNNING=$(docker ps -q -f name=^jenkins$ 2>/dev/null || true)
 JENKINS_EXISTS=$(docker ps -aq -f name=^jenkins$ 2>/dev/null || true)
 
@@ -445,7 +536,8 @@ if [ -n "$JENKINS_RUNNING" ]; then
     # Sync init scripts and git config into running container
     docker exec -u root jenkins mkdir -p /var/jenkins_home/init.groovy.d /var/jenkins_home/.ssh 2>/dev/null || true
     docker cp "${JENKINS_HOME_HOST}/init.groovy.d/01-create-admin.groovy" jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
-    docker cp "${JENKINS_HOME_HOST}/init.groovy.d/02-github-credentials.groovy" jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
+    docker cp "${JENKINS_HOME_HOST}/init.groovy.d/02-credentials.groovy" jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
+    docker cp "${JENKINS_HOME_HOST}/init.groovy.d/03-create-pipeline-job.groovy" jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
     docker cp "${JENKINS_HOME_HOST}/.gitconfig" jenkins:/var/jenkins_home/.gitconfig 2>/dev/null || true
     if [ -n "$GITHUB_TOKEN" ]; then
         docker cp "${JENKINS_HOME_HOST}/.git-credentials" jenkins:/var/jenkins_home/.git-credentials 2>/dev/null || true
@@ -456,9 +548,9 @@ if [ -n "$JENKINS_RUNNING" ]; then
     # Check if login works with current credentials
     LOGIN_CHECK=$(curl -s -o /dev/null -w "%{http_code}" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" http://localhost:8080/api/json 2>/dev/null || echo "000")
     if [ "$LOGIN_CHECK" = "200" ]; then
-        echo -e "${GREEN}[✓] Jenkins login verified for user '${JENKINS_ADMIN_USER}'. Skipping container restart.${NC}"
+        echo -e "${GREEN}[✓] Jenkins login verified for user '${JENKINS_ADMIN_USER}'.${NC}"
     else
-        echo -e "${YELLOW}[*] Applying login configuration and restarting Jenkins container...${NC}"
+        echo -e "${YELLOW}[*] Applying credentials configuration and restarting Jenkins container...${NC}"
         docker restart jenkins >/dev/null 2>&1 || true
     fi
 elif [ -n "$JENKINS_EXISTS" ]; then
@@ -482,16 +574,40 @@ else
       -e JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD}" \
       -e GITHUB_USERNAME="${GITHUB_USERNAME}" \
       -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+      -e DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME}" \
+      -e DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN}" \
       --network minikube \
       jenkins/jenkins:lts
 fi
 
-# 6. Ensure internal tools inside Jenkins container (python3, pip, kubectl, argocd, git identity)
+# 7. Ensure required Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git, Pipelines)
+echo -e "${YELLOW}[*] Checking required Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git)...${NC}"
+PLUGINS_TO_INSTALL=(docker-workflow docker-plugin kubernetes kubernetes-cli git workflow-aggregator pipeline-stage-view credentials-binding plain-credentials ws-cleanup)
+NEED_PLUGIN_INSTALL=false
+
+for pl in "${PLUGINS_TO_INSTALL[@]}"; do
+    if [ ! -f "${JENKINS_HOME_HOST}/plugins/${pl}.jpi" ] && [ ! -f "${JENKINS_HOME_HOST}/plugins/${pl}.hpi" ]; then
+        NEED_PLUGIN_INSTALL=true
+        break
+    fi
+done
+
+if [ "$NEED_PLUGIN_INSTALL" = "true" ]; then
+    echo -e "${YELLOW}[*] Installing required Jenkins plugins: ${PLUGINS_TO_INSTALL[*]}...${NC}"
+    docker exec -u root jenkins jenkins-plugin-cli --plugins "${PLUGINS_TO_INSTALL[@]}" || true
+    echo -e "${YELLOW}[*] Restarting Jenkins to activate newly installed plugins...${NC}"
+    docker restart jenkins >/dev/null 2>&1 || true
+    sleep 6
+else
+    echo -e "${GREEN}[✓] Required Jenkins plugins are already installed.${NC}"
+fi
+
+# 8. Ensure internal tools inside Jenkins container (python3, pip, venv, kubectl, argocd, docker login)
 if ! docker exec jenkins which kubectl >/dev/null 2>&1; then
     echo -e "${YELLOW}[*] Installing Python 3, Kubectl & ArgoCD CLI inside Jenkins container...${NC}"
     docker exec -u root jenkins bash -c "
       apt update -y && \
-      apt install -y python3 python3-pip python3-venv curl jq git && \
+      apt install -y python3 python3-pip python3-venv build-essential curl jq git && \
       ln -sf /usr/bin/python3 /usr/bin/python && \
       curl -LO \"https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && \
       chmod +x kubectl && mv kubectl /usr/local/bin/kubectl && \
@@ -501,6 +617,11 @@ if ! docker exec jenkins which kubectl >/dev/null 2>&1; then
     echo -e "${GREEN}[✓] Toolchain installed inside Jenkins.${NC}"
 else
     echo -e "${GREEN}[✓] Toolchain (python3, kubectl, argocd) already present inside Jenkins.${NC}"
+fi
+
+# Authenticate Docker daemon inside Jenkins container
+if [ -n "$DOCKERHUB_TOKEN" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
+    docker exec -u root jenkins bash -c "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin 2>/dev/null || true"
 fi
 
 # Configure Git user inside Jenkins container
@@ -659,17 +780,16 @@ echo -e "  URL:      ${BOLD}http://${EXTERNAL_IP}:30751${NC}"
 echo -e "  Username: ${BOLD}admin${NC}"
 echo -e "  Password: ${GREEN}${ARGOCD_PASSWORD:-"Run: kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"}${NC}"
 
-echo -e "\n${CYAN}${BOLD}🔑 Git & GitHub Credentials Summary:${NC}"
-echo -e "  Git Author:     ${BOLD}${GIT_USER_NAME} <${GIT_USER_EMAIL}>${NC}"
-echo -e "  GitHub Account: ${GREEN}${BOLD}${GITHUB_USERNAME}${NC}"
-if [ -n "$GITHUB_TOKEN" ]; then
-    echo -e "  GitHub Token:   ${GREEN}[Configured in Git helper & Jenkins credentials 'github-token']${NC}"
-else
-    echo -e "  GitHub Token:   ${YELLOW}[Not set. Set via: export GITHUB_TOKEN=ghp_... and re-run]${NC}"
-fi
+echo -e "\n${CYAN}${BOLD}🔑 Git, GitHub & DockerHub Credentials in Jenkins:${NC}"
+echo -e "  Git Author:      ${BOLD}${GIT_USER_NAME} <${GIT_USER_EMAIL}>${NC}"
+echo -e "  GitHub Account:  ${GREEN}${BOLD}${GITHUB_USERNAME}${NC}"
+echo -e "  GitHub Creds:    ${GREEN}[Stored as 'github-token' & 'github-pat' in Jenkins]${NC}"
+echo -e "  DockerHub User:  ${GREEN}${BOLD}${DOCKERHUB_USERNAME}${NC}"
+echo -e "  DockerHub Creds: ${GREEN}[Stored as 'dockerhub-token' & 'gitops-dockerhub-token' in Jenkins]${NC}"
+echo -e "  Pipeline Job:    ${CYAN}${BOLD}http://${EXTERNAL_IP}:8080/job/smart-manufacturing-pipeline/${NC}"
 if [ -f "$USER_HOME/.ssh/id_ed25519.pub" ]; then
-    echo -e "  SSH Public Key: ${BOLD}${USER_HOME}/.ssh/id_ed25519.pub${NC}"
-    echo -e "  Add to GitHub:  ${YELLOW}gh ssh-key add ~/.ssh/id_ed25519.pub -t 'devops-vm'  (or https://github.com/settings/keys)${NC}"
+    echo -e "  SSH Public Key:  ${BOLD}${USER_HOME}/.ssh/id_ed25519.pub${NC}"
+    echo -e "  Add to GitHub:   ${YELLOW}gh ssh-key add ~/.ssh/id_ed25519.pub -t 'devops-vm'  (or https://github.com/settings/keys)${NC}"
 fi
 
 echo -e "\n${YELLOW}${BOLD}ArgoCD CLI Login Command:${NC}"
