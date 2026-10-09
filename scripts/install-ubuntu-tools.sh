@@ -877,8 +877,16 @@ try {
     def flowDef = new CpsScmFlowDefinition(scm, "Jenkinsfile")
     flowDef.setLightweight(true)
     job.setDefinition(flowDef)
+
+    // Attach GitHub push webhook trigger
+    try {
+        def ghTriggerClass = Class.forName("com.cloudbees.jenkins.GitHubPushTrigger")
+        def ghTrigger = ghTriggerClass.getDeclaredConstructor().newInstance()
+        job.addTrigger(ghTrigger)
+    } catch (Throwable tTrig) {}
+
     job.save()
-    println "--> [Antigravity DevOps] Pipeline job '\${jobName}' configured with Git SCM & Jenkinsfile."
+    println "--> [Antigravity DevOps] Pipeline job '\${jobName}' configured with Git SCM, GitHub webhook trigger & Jenkinsfile."
 } catch (Throwable t) {
     println "--> [Antigravity DevOps] Pipeline job note: " + t.message
 }
@@ -1041,7 +1049,7 @@ fi
 
 # 7. Ensure required Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git, Pipelines)
 echo -e "${YELLOW}[*] Checking required Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git)...${NC}"
-PLUGINS_TO_INSTALL=(docker-workflow docker-plugin kubernetes kubernetes-cli git workflow-aggregator pipeline-stage-view credentials-binding plain-credentials ws-cleanup)
+PLUGINS_TO_INSTALL=(docker-workflow docker-plugin kubernetes kubernetes-cli git workflow-aggregator pipeline-stage-view credentials-binding plain-credentials ws-cleanup github)
 NEED_PLUGIN_INSTALL=false
 
 for pl in "${PLUGINS_TO_INSTALL[@]}"; do

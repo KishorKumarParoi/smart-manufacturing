@@ -1,12 +1,19 @@
 pipeline {
     agent any
 
+    triggers {
+        // Triggered automatically whenever GitHub sends a webhook push event
+        githubPush()
+        // Fallback polling every 5 minutes in case webhook delivery is delayed
+        pollSCM('H/5 * * * *')
+    }
+
     environment {
         APP_NAME                 = "smart-manufacturing"
         IMAGE_NAME               = "kishorkumarparoi/smart-manufacturing"
         BUILD_TAG                = "${env.BUILD_NUMBER}"
-        DOCKER_HUB_CREDENTIALS_ID = "dockerhub-token"
-        GITHUB_CREDENTIALS_ID    = "github-token"
+        DOCKER_HUB_CREDENTIALS_ID = "gitops-dockerhub-token"
+        GITHUB_CREDENTIALS_ID    = "github-pat"
         // UV settings — no venv prompts, no progress bars in CI logs
         UV_NO_PROGRESS           = "1"
         UV_SYSTEM_PYTHON         = "1"

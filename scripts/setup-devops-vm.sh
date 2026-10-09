@@ -430,8 +430,15 @@ try {
     def flowDef = new CpsScmFlowDefinition(scm, "Jenkinsfile")
     flowDef.setLightweight(true)
     job.setDefinition(flowDef)
+
+    try {
+        def ghTriggerClass = Class.forName("com.cloudbees.jenkins.GitHubPushTrigger")
+        def ghTrigger = ghTriggerClass.getDeclaredConstructor().newInstance()
+        job.addTrigger(ghTrigger)
+    } catch (Throwable tTrig) {}
+
     job.save()
-    println "--> [DevOps Bootstrap] Pipeline job '${jobName}' configured with Git SCM & Jenkinsfile."
+    println "--> [DevOps Bootstrap] Pipeline job '${jobName}' configured with Git SCM, GitHub webhook trigger & Jenkinsfile."
 } catch (Throwable t) {
     println "--> [DevOps Bootstrap] Job configuration note: " + t.message
 }
@@ -527,7 +534,7 @@ else
 fi
 
 # Ensure Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git, Pipelines)
-PLUGINS_TO_INSTALL=(docker-workflow docker-plugin kubernetes kubernetes-cli git workflow-aggregator pipeline-stage-view credentials-binding plain-credentials ws-cleanup)
+PLUGINS_TO_INSTALL=(docker-workflow docker-plugin kubernetes kubernetes-cli git workflow-aggregator pipeline-stage-view credentials-binding plain-credentials ws-cleanup github)
 NEED_INSTALL=false
 for p in "${PLUGINS_TO_INSTALL[@]}"; do
     if [ ! -f "/var/jenkins_home/plugins/${p}.jpi" ] && [ ! -f "/var/jenkins_home/plugins/${p}.hpi" ]; then
