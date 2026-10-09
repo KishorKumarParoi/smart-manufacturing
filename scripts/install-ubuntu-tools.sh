@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ALL-IN-ONE UBUNTU DEVOPS SETUP SCRIPT (IDEMPOTENT & PRODUCTION-READY)
+# ALL-IN-ONE DEVOPS SETUP SCRIPT (UBUNTU & DEBIAN - IDEMPOTENT & PRODUCTION-READY)
 # Docker | Minikube | Kubectl | ArgoCD CLI & Server | Jenkins | Git/GitHub | Firewall
-# Target OS: Ubuntu 20.04 / 22.04 / 24.04 LTS (x86_64)
+# Target OS: Ubuntu 20.04 / 22.04 / 24.04 LTS | Debian 11 / 12 / 13 (Trixie) (x86_64)
 # ==============================================================================
 
 set -eo pipefail
@@ -18,7 +18,7 @@ header() {
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
 ==================================================================
-  DEVOPS PLATFORM AUTOMATED SETUP FOR UBUNTU
+  DEVOPS PLATFORM AUTOMATED SETUP (UBUNTU / DEBIAN)
   Docker | Minikube | Kubectl | ArgoCD | Jenkins | Git/GitHub | Firewall
 ==================================================================
 EOF
@@ -73,6 +73,26 @@ DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN:-}"
 FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
 TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
 REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
+
+# Detect Operating System (Ubuntu / Debian / Debian-derivatives)
+OS_ID="ubuntu"
+OS_CODENAME="jammy"
+if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-ubuntu}"
+    OS_CODENAME="${VERSION_CODENAME:-}"
+fi
+
+# Standardize Docker upstream distro mapping
+DOCKER_DISTRO="ubuntu"
+if [ "$OS_ID" = "debian" ] || [ "${ID_LIKE:-}" = "debian" ] || echo "${ID_LIKE:-}" | grep -qw "debian"; then
+    DOCKER_DISTRO="debian"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
+else
+    DOCKER_DISTRO="ubuntu"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
+fi
 
 # System Optimization, Memory Clearing & Bloatware Cleanup Function
 optimize_system_and_ram() {
@@ -273,10 +293,12 @@ echo -e "${YELLOW}[*] Git & GitHub profile:${NC} ${BOLD}${GITHUB_USERNAME} (${GI
 echo -e "${YELLOW}[*] DockerHub account:${NC} ${BOLD}${DOCKERHUB_USERNAME}${NC}"
 
 # ==============================================================================
-# 1. Base Packages & Dependencies (Idempotent)
+# 1. Base Packages & Dependencies (Idempotent & Multi-Distro Compatible)
 # ==============================================================================
-echo -e "\n${CYAN}[1/9] Checking base utilities...${NC}"
-REQUIRED_PKGS=(apt-transport-https ca-certificates curl gnupg lsb-release software-properties-common wget conntrack git jq ufw acl procps)
+echo -e "\n${CYAN}[1/9] Checking base utilities (${DOCKER_DISTRO} ${OS_CODENAME})...${NC}"
+
+# Core packages guaranteed across Debian (including Trixie) and Ubuntu LTS releases
+REQUIRED_PKGS=(ca-certificates curl gnupg lsb-release wget conntrack git jq ufw acl procps)
 MISSING_PKGS=()
 
 for pkg in "${REQUIRED_PKGS[@]}"; do
@@ -290,8 +312,14 @@ if [ ${#MISSING_PKGS[@]} -eq 0 ]; then
 else
     echo -e "${YELLOW}[*] Installing missing utilities: ${MISSING_PKGS[*]}...${NC}"
     apt-get update -y
-    apt-get install -y --no-install-recommends "${MISSING_PKGS[@]}"
-    echo -e "${GREEN}[✓] Base utilities installed.${NC}"
+    for pkg in "${MISSING_PKGS[@]}"; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            apt-get install -y --no-install-recommends "$pkg" || {
+                echo -e "${YELLOW}[!] Notice: Package '$pkg' could not be installed directly, continuing...${NC}"
+            }
+        fi
+    done
+    echo -e "${GREEN}[✓] Base utilities check completed.${NC}"
 fi
 
 # ==============================================================================
@@ -302,14 +330,14 @@ echo -e "\n${CYAN}[2/9] Checking Docker CE installation & non-root socket permis
 if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
     echo -e "${GREEN}[✓] Docker is already installed and running: ${NC}$(docker --version)"
 else
-    echo -e "${YELLOW}[*] Installing Docker CE and Docker Compose plugin...${NC}"
+    echo -e "${YELLOW}[*] Installing Docker CE and Docker Compose plugin for ${BOLD}${DOCKER_DISTRO} (${OS_CODENAME})${NC}...${NC}"
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
+    curl -fsSL "https://download.docker.com/linux/${DOCKER_DISTRO}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
     chmod a+r /etc/apt/keyrings/docker.gpg
 
     echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} \
+      ${OS_CODENAME} stable" | \
       tee /etc/apt/sources.list.d/docker.list > /dev/null
 
     apt-get update -y
@@ -905,7 +933,7 @@ done
 echo -e "\n${CYAN}[8/9] Configuring automatic firewall rules ('${FIREWALL_NAME}') & exposure...${NC}"
 
 # A. Configure Local OS Firewall (UFW)
-echo -e "${YELLOW}[*] Configuring Ubuntu UFW local firewall for DevOps ports...${NC}"
+echo -e "${YELLOW}[*] Configuring UFW local firewall for DevOps ports...${NC}"
 for port in "${REQUIRED_PORTS[@]}"; do
     ufw allow "${port}/tcp" comment "DevOps Platform ${port}" >/dev/null 2>&1 || true
 done
@@ -1158,7 +1186,7 @@ EOF_JSON
         fi
     fi
 else
-    echo -e "${YELLOW}[*] Standalone Ubuntu environment (non-GCP). Local UFW firewall rules are active.${NC}"
+    echo -e "${YELLOW}[*] Standalone Linux environment (non-GCP). Local UFW firewall rules are active.${NC}"
 fi
 
 # ==============================================================================

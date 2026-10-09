@@ -37,6 +37,26 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-kishorkumarparoi}"
 DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN:-}"
 
+# Detect Operating System (Ubuntu / Debian / Debian-derivatives)
+OS_ID="ubuntu"
+OS_CODENAME="jammy"
+if [ -f /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-ubuntu}"
+    OS_CODENAME="${VERSION_CODENAME:-}"
+fi
+
+# Standardize Docker upstream distro mapping
+DOCKER_DISTRO="ubuntu"
+if [ "$OS_ID" = "debian" ] || [ "${ID_LIKE:-}" = "debian" ] || echo "${ID_LIKE:-}" | grep -qw "debian"; then
+    DOCKER_DISTRO="debian"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
+else
+    DOCKER_DISTRO="ubuntu"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
+fi
+
 log_step() {
     echo -e "\n${CYAN}${BOLD}[STEP] $1${NC}"
 }
@@ -46,21 +66,14 @@ log_success() {
 }
 
 # 1. Update and base packages
-log_step "1/12: Updating system packages and installing baseline utilities..."
+log_step "1/12: Updating system packages and installing baseline utilities (${DOCKER_DISTRO} ${OS_CODENAME})..."
 sudo apt-get update -y
-sudo apt-get install -y --no-install-recommends \
-    curl \
-    wget \
-    git \
-    unzip \
-    jq \
-    software-properties-common \
-    apt-transport-https \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    acl \
-    procps
+BASE_PKGS=(curl wget git unzip jq ca-certificates gnupg lsb-release acl procps)
+for pkg in "${BASE_PKGS[@]}"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+        sudo apt-get install -y --no-install-recommends "$pkg" || true
+    fi
+done
 
 # Configure Git & GitHub on host
 log_step "2/12: Configuring Git identity & GitHub CLI for ${GITHUB_USERNAME}..."
@@ -115,14 +128,14 @@ echo "fs.file-max=131072" | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 
 # 2. Install Docker & Docker Compose
-log_step "2/10: Installing Docker CE and Docker Compose Plugin..."
+log_step "2/10: Installing Docker CE and Docker Compose Plugin for ${DOCKER_DISTRO} (${OS_CODENAME})..."
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
+curl -fsSL "https://download.docker.com/linux/${DOCKER_DISTRO}/gpg" | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
 echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} \
+  ${OS_CODENAME} stable" | \
   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 sudo apt-get update -y
@@ -169,8 +182,14 @@ log_success "Terraform installed ($(terraform -version | head -n 1))"
 
 # 4. Install Ansible
 log_step "4/10: Installing Ansible..."
-sudo add-apt-repository --yes --update ppa:ansible/ansible
-sudo apt-get install -y ansible
+if [ "$DOCKER_DISTRO" = "ubuntu" ] && command -v add-apt-repository >/dev/null 2>&1; then
+    sudo add-apt-repository --yes --update ppa:ansible/ansible 2>/dev/null || true
+fi
+sudo apt-get install -y ansible 2>/dev/null || true
+if ! command -v ansible >/dev/null 2>&1; then
+    sudo apt-get install -y python3-pip pipx 2>/dev/null || true
+    pip3 install --break-system-packages ansible 2>/dev/null || true
+fi
 log_success "Ansible installed ($(ansible --version | head -n 1))"
 
 # 5. Install Kubernetes (K3s - Lightweight CNCF Kubernetes)
