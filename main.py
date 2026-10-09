@@ -83,19 +83,30 @@ PRESETS = {
     }
 }
 
-# Lazy loading or auto-generation
+# Lazy loading — non-fatal if model artifacts are missing on startup
 model = None
 scaler = None
+model_load_error = None
 
 def get_artifacts():
-    global model, scaler
-    if model is None or scaler is None:
+    global model, scaler, model_load_error
+    if model is not None and scaler is not None:
+        return model, scaler
+    try:
         if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
-            from src.model_training import ModelTraining
-            trainer = ModelTraining("artifacts/processed/", "artifacts/models/")
-            trainer.run()
+            try:
+                from src.model_training import ModelTraining
+                trainer = ModelTraining("artifacts/processed/", "artifacts/models/")
+                trainer.run()
+            except Exception as train_err:
+                model_load_error = f"Model training failed: {train_err}"
+                return None, None
         model = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
+        model_load_error = None
+    except Exception as e:
+        model_load_error = str(e)
+        return None, None
     return model, scaler
 
 def predict_efficiency(form_data):
@@ -205,14 +216,25 @@ def api_presets():
 
 @app.route("/api/health", methods=["GET"])
 def health():
+    clf, scl = get_artifacts()
     return jsonify({
         "status": "healthy",
         "service": "Smart Manufacturing AI Inference Server",
+        "model_loaded": clf is not None,
+        "model_error": model_load_error,
         "timestamp": datetime.now().isoformat()
     }), 200
 
 if __name__ == "__main__":
-    get_artifacts()
+    # Non-fatal startup: log model load result but always start the server
+    try:
+        get_artifacts()
+        if model is not None:
+            print(f"[✓] Model loaded from {MODEL_PATH}")
+        else:
+            print(f"[!] Model not loaded: {model_load_error} — /predict will return 503")
+    except Exception as e:
+        print(f"[!] Startup model load error (non-fatal): {e}")
     port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in ("1", "true")
     app.run(debug=debug_mode, host="0.0.0.0", port=port)

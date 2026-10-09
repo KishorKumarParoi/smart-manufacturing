@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mlops-app
+  name: smart-manufacturing
   labels:
-    app: mlops-app
+    app: smart-manufacturing
     tier: api
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: mlops-app
+      app: smart-manufacturing
   template:
     metadata:
       labels:
-        app: mlops-app
+        app: smart-manufacturing
         tier: api
     spec:
       containers:
-      - name: mlops-app
+      - name: smart-manufacturing
         image: kishorkumarparoi/smart-manufacturing:latest
         imagePullPolicy: Always
         ports:
@@ -28,24 +28,35 @@ spec:
           value: "5000"
         - name: FLASK_DEBUG
           value: "0"
+        - name: PYTHONUNBUFFERED
+          value: "1"
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
+            cpu: 200m
             memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1500Mi
+        # Startup probe: give the app 3 min to load ML model on first start
+        startupProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          failureThreshold: 18
+          periodSeconds: 10
         readinessProbe:
           httpGet:
             path: /api/health
             port: 5000
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 3
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
         livenessProbe:
           httpGet:
             path: /api/health
             port: 5000
-          initialDelaySeconds: 15
-          periodSeconds: 20
+          initialDelaySeconds: 30
+          periodSeconds: 30
           timeoutSeconds: 5
+          failureThreshold: 3

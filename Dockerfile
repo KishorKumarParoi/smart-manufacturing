@@ -8,13 +8,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Cache Python dependencies in separate layer
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install uv for fast dependency resolution
+RUN pip install --no-cache-dir uv
 
-# Copy application source code and pre-trained artifacts
+# Copy dependency files first (Docker layer cache)
+COPY pyproject.toml requirements.txt* ./
+
+# Install all project dependencies from pyproject.toml via uv
+RUN uv pip install --system --no-cache -r pyproject.toml 2>/dev/null \
+    || pip install --no-cache-dir -r requirements.txt
+
+# Copy full application source including pre-trained model artifacts
 COPY . /app
+
+# Ensure model artifacts directory exists (non-fatal if pkl files are absent)
+RUN mkdir -p artifacts/models artifacts/processed
 
 # Standard port for container and Kubernetes manifests
 EXPOSE 5000
@@ -26,7 +34,7 @@ ENV PORT=5000 \
     PYTHONUNBUFFERED=1
 
 # Container health check probe
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
   CMD curl -f http://localhost:5000/api/health || exit 1
 
 # Launch application server
