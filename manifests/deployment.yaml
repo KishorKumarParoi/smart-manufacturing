@@ -19,7 +19,7 @@ spec:
       containers:
       - name: smart-manufacturing
         image: kishorkumarparoi/smart-manufacturing:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         ports:
         - name: http
           containerPort: 5000
