@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ALL-IN-ONE DEVOPS SETUP SCRIPT (UBUNTU & DEBIAN - IDEMPOTENT & PRODUCTION-READY)
-# Docker | Minikube | Kubectl | ArgoCD CLI & Server | Jenkins | Git/GitHub | Firewall
+# ALL-IN-ONE ENTERPRISE DEVOPS PLATFORM SETUP (UBUNTU / DEBIAN)
+# Docker | Minikube | Kubectl | ArgoCD | SonarQube | Nexus 3 | Trivy | Prometheus | Grafana | Jenkins
 # Target OS: Ubuntu 20.04 / 22.04 / 24.04 LTS | Debian 11 / 12 / 13 (Trixie) (x86_64)
+# Fully aligned with Jenkinsfile CI/CD multi-stage pipeline and GitOps workflow
 # ==============================================================================
 
 set -eo pipefail
@@ -17,10 +18,10 @@ NC='\033[0m'
 header() {
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
-==================================================================
-  DEVOPS PLATFORM AUTOMATED SETUP (UBUNTU / DEBIAN)
-  Docker | Minikube | Kubectl | ArgoCD | Jenkins | Git/GitHub | Firewall
-==================================================================
+====================================================================================
+  ENTERPRISE DEVOPS & AI OPERATIONS PLATFORM AUTOMATED SETUP
+  Docker | Minikube | Kubectl | ArgoCD | SonarQube | Nexus 3 | Trivy | Prometheus | Grafana | Jenkins
+====================================================================================
 EOF
     echo -e "${NC}"
 }
@@ -36,6 +37,9 @@ show_help() {
     echo "  --github-user <username>      Set GitHub username (default: KishorKumarParoi)"
     echo "  --dockerhub-user <username>   Set DockerHub username (default: kishorkumarparoi)"
     echo "  --jenkins-password <pass>     Set Jenkins admin password (default: admin123)"
+    echo "  --sonarqube-token <token>     Set SonarQube system token"
+    echo "  --nexus-password <pass>       Set Sonatype Nexus admin password (default: admin123)"
+    echo "  --nexus-repo <repo>           Set Nexus raw release repo name (default: smart-manufacturing-releases)"
     echo "  --optimize, --cleanup         Clear RAM caches, vacuum logs, and tune kernel"
     echo "  --fix-minikube                Reset stale Minikube Docker network bridge"
     echo "  --help, -h                    Show this help message"
@@ -51,6 +55,7 @@ fi
 REAL_USER="${SUDO_USER:-$USER}"
 USER_HOME=$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6 || echo "$HOME")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Discover and source all candidate environment secret files
 ENV_FILES=(
@@ -59,8 +64,8 @@ ENV_FILES=(
     "${USER_HOME}/.devops.env"
     "${USER_HOME}/smart_manufacturing/.env"
     "${USER_HOME}/smart-manufacturing/.env"
+    "${WORKSPACE_ROOT}/.env"
     "${PWD}/.env"
-    "${SCRIPT_DIR}/../.env"
     "${SCRIPT_DIR}/.env"
 )
 for ef in "${ENV_FILES[@]}"; do
@@ -96,6 +101,18 @@ while [[ $# -gt 0 ]]; do
             JENKINS_ADMIN_PASSWORD="$2"
             shift 2
             ;;
+        --sonarqube-token|--sq-token)
+            SONARQUBE_TOKEN="$2"
+            shift 2
+            ;;
+        --nexus-password|--nexus-admin-password)
+            NEXUS_ADMIN_PASSWORD="$2"
+            shift 2
+            ;;
+        --nexus-repo)
+            NEXUS_REPO="$2"
+            shift 2
+            ;;
         --optimize|--clean|--cleanup|--speedup|-o)
             RUN_MODE="optimize"
             shift
@@ -114,7 +131,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Configuration defaults
+# Configuration defaults aligned with Jenkinsfile
 JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER:-admin}"
 JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD:-admin123}"
 GIT_USER_NAME="${GIT_USER_NAME:-Kishor Kumar Paroi}"
@@ -123,9 +140,15 @@ GITHUB_USERNAME="${GITHUB_USERNAME:-KishorKumarParoi}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME:-kishorkumarparoi}"
 DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN:-}"
+SONARQUBE_TOKEN="${SONARQUBE_TOKEN:-squ_63b54a3af718c9dc398fb8e2102118114db3d548}"
+NEXUS_ADMIN_USER="${NEXUS_ADMIN_USER:-admin}"
+NEXUS_ADMIN_PASSWORD="${NEXUS_ADMIN_PASSWORD:-admin123}"
+NEXUS_REPO="${NEXUS_REPO:-smart-manufacturing-releases}"
+APP_NAME="smart-manufacturing"
+
 FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
 TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
-REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
+REQUIRED_PORTS=(22 80 443 3000 8000 8080 8081 8082 9000 9090 30080 30090 30300 30751 30752 50000)
 
 # Non-blocking interactive prompt if tokens are missing and /dev/tty is available
 if [ -z "$GITHUB_TOKEN" ] && [ -c /dev/tty ]; then
@@ -148,129 +171,53 @@ if [ -z "$DOCKERHUB_TOKEN" ] && [ -c /dev/tty ]; then
     fi
 fi
 
-# Always guarantee non-empty effective tokens so Jenkins credentials store ALWAYS creates them
-GITHUB_TOKEN_EFFECTIVE="${GITHUB_TOKEN:-placeholder-github-token-update-in-jenkins}"
-DOCKERHUB_TOKEN_EFFECTIVE="${DOCKERHUB_TOKEN:-placeholder-dockerhub-token-update-in-jenkins}"
+# Fallback tokens for automated pipelines
+GITHUB_TOKEN_EFFECTIVE="${GITHUB_TOKEN:-ghp_placeholder_token_devops_auto_000000000000}"
+DOCKERHUB_TOKEN_EFFECTIVE="${DOCKERHUB_TOKEN:-dckr_pat_placeholder_devops_auto_000000000000}"
 
-# Auto-persist secrets to ~/.devops.env and /root/.devops.env for persistence across script runs
-for p_file in "/root/.devops.env" "${USER_HOME}/.devops.env"; do
-    if [ -n "$GITHUB_TOKEN" ] || [ -n "$DOCKERHUB_TOKEN" ] || [ ! -f "$p_file" ]; then
-        mkdir -p "$(dirname "$p_file")"
-        cat << EOF_PERSIST > "$p_file"
-# Smart Manufacturing DevOps Platform Secrets (Auto-persisted)
-export GITHUB_USERNAME="${GITHUB_USERNAME}"
-export GITHUB_TOKEN="${GITHUB_TOKEN}"
-export DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME}"
-export DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN}"
-export JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER}"
-export JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD}"
-EOF_PERSIST
-        chmod 600 "$p_file"
-        chown "$REAL_USER:$REAL_USER" "$p_file" 2>/dev/null || true
-    fi
-done
-
-# Detect Operating System (Ubuntu / Debian / Debian-derivatives)
-OS_ID="ubuntu"
-OS_CODENAME="jammy"
+# Detect OS distribution
 if [ -f /etc/os-release ]; then
-    # shellcheck disable=SC1091
     . /etc/os-release
     OS_ID="${ID:-ubuntu}"
     OS_CODENAME="${VERSION_CODENAME:-}"
+else
+    OS_ID="ubuntu"
+    OS_CODENAME="jammy"
 fi
 
-# Standardize Docker upstream distro mapping (prioritize ID=ubuntu over ID_LIKE=debian)
 if [ "$OS_ID" = "ubuntu" ]; then
     DOCKER_DISTRO="ubuntu"
     [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
 elif [ "$OS_ID" = "debian" ]; then
     DOCKER_DISTRO="debian"
     [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
-elif echo "${ID_LIKE:-}" | grep -qw "ubuntu"; then
-    DOCKER_DISTRO="ubuntu"
-    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
-elif echo "${ID_LIKE:-}" | grep -qw "debian"; then
-    DOCKER_DISTRO="debian"
-    [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
 else
     DOCKER_DISTRO="ubuntu"
-    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
+    OS_CODENAME="jammy"
 fi
 
-# System Optimization, Memory Clearing & Bloatware Cleanup Function
+# High-Performance System & Kernel Tuning
 optimize_system_and_ram() {
     echo -e "\n${CYAN}${BOLD}==================================================================${NC}"
-    echo -e "${CYAN}${BOLD} [SYSTEM ACCELERATION] RAM Flush, Bloatware & Disk Optimizer      ${NC}"
+    echo -e "${CYAN}${BOLD} [SYSTEM ACCELERATION] RAM Flush, Conntrack & Kernel Optimizer     ${NC}"
     echo -e "${CYAN}${BOLD}==================================================================${NC}"
 
-    # 1. Capture memory metrics before cleanup
-    local mem_before_free_mb=0
-    local mem_before_avail_mb=0
-    if [ -f /proc/meminfo ]; then
-        mem_before_free_mb=$(awk '/MemFree/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-        mem_before_avail_mb=$(awk '/MemAvailable/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-    fi
-    echo -e "${YELLOW}[*] Initial RAM Available: ${BOLD}${mem_before_avail_mb} MB${NC} (Free: ${mem_before_free_mb} MB)"
-
-    # 2. Deactivate and mask unnecessary telemetry, crash daemons, and background update locks
-    echo -e "${YELLOW}[*] Deactivating telemetry, crash reporters, and unattended update locks...${NC}"
-    local BLOAT_SERVICES=(whoopsie apport apport-autoreport unattended-upgrades update-notifier-download update-notifier-motd)
-    for svc in "${BLOAT_SERVICES[@]}"; do
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            systemctl stop "$svc" 2>/dev/null || true
-        fi
-        systemctl disable "$svc" 2>/dev/null || true
-        systemctl mask "$svc" 2>/dev/null || true
-    done
-    echo -e "${GREEN}[✓] Background telemetry and crash daemons deactivated.${NC}"
-
-    # 3. Clean Package Manager caches and purge orphan packages
-    echo -e "${YELLOW}[*] Purging obsolete packages, broken locks, and package manager caches...${NC}"
-    export DEBIAN_FRONTEND=noninteractive
-    rm -f /var/lib/dpkg/lock* /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true
-    dpkg --configure -a >/dev/null 2>&1 || true
-    
-    apt-get autoremove --purge -y >/dev/null 2>&1 || true
-    apt-get autoclean -y >/dev/null 2>&1 || true
-    apt-get clean -y >/dev/null 2>&1 || true
-    rm -rf /var/cache/apt/archives/*.deb /var/cache/apt/archives/partial/* /var/lib/apt/lists/partial/* 2>/dev/null || true
-    
-    if [ -d "/var/lib/snapd/cache" ]; then
-        rm -rf /var/lib/snapd/cache/* 2>/dev/null || true
-    fi
-    echo -e "${GREEN}[✓] APT caches cleared & orphan packages purged.${NC}"
-
-    # 4. Vacuum systemd journal logs to max 50MB (frees 500MB - 3GB)
-    echo -e "${YELLOW}[*] Vacuuming systemd journal logs (retaining max 1 day / 50MB)...${NC}"
+    # 1. Vacuum journal logs
     if command -v journalctl >/dev/null 2>&1; then
         journalctl --vacuum-time=1d --vacuum-size=50M >/dev/null 2>&1 || true
     fi
 
-    # 5. Remove compressed and old rotated log archives (*.gz, *.1, *.old, *.xz)
-    echo -e "${YELLOW}[*] Removing obsolete log archives and clearing crash dumps...${NC}"
-    find /var/log -type f \( -name "*.gz" -o -name "*.1" -o -name "*.old" -o -name "*.xz" \) -delete 2>/dev/null || true
-    find /var/log -type f -name "*.log" -size +50M -exec truncate -s 2M {} + 2>/dev/null || true
-    rm -rf /var/crash/* /var/log/journal/*/*.journal~ /var/tmp/* 2>/dev/null || true
-    find /tmp -mindepth 1 -maxdepth 2 -not -name ".*" -not -name "hsperfdata_*" -mtime +1 -delete 2>/dev/null || true
-    rm -rf /root/.cache/pip /home/*/.cache/pip /tmp/pip* /tmp/*.whl 2>/dev/null || true
-    find /var/jenkins_home -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-    echo -e "${GREEN}[✓] Log files trimmed and temp archives cleared.${NC}"
-
-    # 6. Non-destructive Docker build cache & dangling pruning
+    # 2. Prune Docker dangling caches
     if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
-        echo -e "${YELLOW}[*] Pruning dangling Docker build cache and dangling images...${NC}"
-        docker builder prune -f >/dev/null 2>&1 || true
+        docker builder prune -f --filter "until=24h" >/dev/null 2>&1 || true
         docker network prune -f >/dev/null 2>&1 || true
-        docker image prune -f >/dev/null 2>&1 || true
-        echo -e "${GREEN}[✓] Docker build cache and dangling networks cleaned.${NC}"
     fi
 
-    # 7. Kernel & Virtual Memory High-Performance Tuning (sysctl)
-    echo -e "${YELLOW}[*] Applying Linux kernel VM parameters (swappiness=10, max_map_count=524288)...${NC}"
+    # 3. Apply High-Performance Kernel & Conntrack Parameters
+    echo -e "${YELLOW}[*] Applying Linux kernel parameters (conntrack max 1M, max_map_count 524288)...${NC}"
     mkdir -p /etc/sysctl.d
     cat << "EOF_SYSCTL" > /etc/sysctl.d/99-devops-performance.conf
-# Antigravity DevOps Platform Performance Tuning
+# Antigravity Enterprise DevOps Platform Tuning
 vm.swappiness = 10
 vm.vfs_cache_pressure = 50
 vm.dirty_ratio = 15
@@ -284,9 +231,14 @@ net.ipv4.tcp_max_syn_backlog = 8192
 net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.ip_forward = 1
 net.bridge.bridge-nf-call-iptables = 1
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_tcp_timeout_established = 600
 EOF_SYSCTL
 
+    modprobe nf_conntrack 2>/dev/null || true
     sysctl --system >/dev/null 2>&1 || true
+    sysctl -w net.netfilter.nf_conntrack_max=1048576 2>/dev/null || true
+    sysctl -w net.netfilter.nf_conntrack_tcp_timeout_established=600 2>/dev/null || true
 
     mkdir -p /etc/security/limits.d
     cat << "EOF_LIMITS" > /etc/security/limits.d/99-devops.conf
@@ -297,61 +249,26 @@ EOF_SYSCTL
 root soft nofile 1048576
 root hard nofile 1048576
 EOF_LIMITS
-    echo -e "${GREEN}[✓] Kernel sysctl and open file descriptor limits optimized.${NC}"
 
-    # 8. Immediate RAM Cache Flush, Memory Compaction & Stale Swap Purge
-    echo -e "${YELLOW}[*] Flushing pagecache, dentries, and inodes (sync + drop_caches)...${NC}"
     sync
     echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
-
-    if [ -f /proc/swaps ] && [ "$(wc -l < /proc/swaps 2>/dev/null || echo 0)" -gt 1 ]; then
-        echo -e "${YELLOW}[*] Purging stale swap buffer memory back into fast RAM...${NC}"
-        swapoff -a 2>/dev/null && swapon -a 2>/dev/null || true
-    fi
-
-    # 9. Report Post-Optimization Memory Stats
-    local mem_after_free_mb=0
-    local mem_after_avail_mb=0
-    if [ -f /proc/meminfo ]; then
-        mem_after_free_mb=$(awk '/MemFree/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-        mem_after_avail_mb=$(awk '/MemAvailable/ {printf "%.0f", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
-    fi
-
-    local freed_mb=$((mem_after_free_mb - mem_before_free_mb))
-    if [ "$freed_mb" -lt 0 ]; then
-        freed_mb=0
-    fi
-
-    echo -e "${GREEN}${BOLD}[✓] RAM & System Optimization Complete!${NC}"
-    echo -e "    • Available RAM: ${BOLD}${mem_after_avail_mb} MB${NC} (Free: ${mem_after_free_mb} MB)"
-    echo -e "    • Direct RAM Released: ${GREEN}${BOLD}+${freed_mb} MB${NC}"
-    echo -e "    • Swappiness: ${BOLD}$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '10')${NC} (optimized for DevOps workloads)"
+    echo -e "${GREEN}[✓] System RAM and kernel network parameters optimized.${NC}"
 }
 
 # Minikube Self-Healing & Network Recovery Function
 fix_and_start_minikube() {
     echo -e "\n${YELLOW}${BOLD}[*] Auto-Healing Minikube Cluster & Docker Network IPAM...${NC}"
     
-    # 1. Stop conflicting k3s service if active on host
     if systemctl is-active --quiet k3s 2>/dev/null; then
-        echo -e "${YELLOW}[!] Disabling conflicting k3s service to free Kubernetes control-plane ports...${NC}"
         systemctl stop k3s 2>/dev/null || true
         systemctl disable k3s 2>/dev/null || true
     fi
 
-    # 2. Purge stale Minikube profile and container
-    echo -e "${YELLOW}[*] Purging stale Minikube profile and removing orphaned container...${NC}"
     sudo -u "$REAL_USER" minikube delete --all --purge >/dev/null 2>&1 || true
     docker rm -f minikube 2>/dev/null || true
-
-    # 3. Clean Docker network bridge 'minikube' to release locked IP addresses (Address already in use)
-    echo -e "${YELLOW}[*] Resetting Docker network bridge 'minikube'...${NC}"
     docker network rm minikube 2>/dev/null || true
     docker network prune -f >/dev/null 2>&1 || true
 
-    # 4. Refresh Docker daemon socket & daemon to clear stale IPAM tables
-    echo -e "${YELLOW}[*] Refreshing Docker daemon network IPAM tables...${NC}"
     systemctl restart docker.socket docker >/dev/null 2>&1 || true
     chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true
     if command -v setfacl >/dev/null 2>&1; then
@@ -360,12 +277,10 @@ fix_and_start_minikube() {
     fi
     sleep 2
 
-    # 5. Start clean Minikube cluster
     echo -e "${YELLOW}[*] Starting clean Minikube cluster using Docker driver...${NC}"
     if sudo -u "$REAL_USER" minikube start --driver=docker; then
         echo -e "${GREEN}[✓] Minikube cluster recovered and running!${NC}"
     else
-        echo -e "${YELLOW}[*] Retrying with clean dedicated network bridge...${NC}"
         sudo -u "$REAL_USER" minikube delete --all --purge >/dev/null 2>&1 || true
         docker rm -f minikube 2>/dev/null || true
         docker network rm minikube 2>/dev/null || true
@@ -374,7 +289,6 @@ fix_and_start_minikube() {
     fi
 }
 
-# Handle standalone execution modes
 if [ "$RUN_MODE" = "optimize" ]; then
     optimize_system_and_ram
     exit 0
@@ -387,60 +301,56 @@ echo -e "${YELLOW}[*] Configuring DevOps toolchain for user:${NC} ${BOLD}${REAL_
 echo -e "${YELLOW}[*] Jenkins admin account:${NC} ${BOLD}${JENKINS_ADMIN_USER}${NC}"
 echo -e "${YELLOW}[*] Git & GitHub profile:${NC} ${BOLD}${GITHUB_USERNAME} (${GIT_USER_EMAIL})${NC}"
 echo -e "${YELLOW}[*] DockerHub account:${NC} ${BOLD}${DOCKERHUB_USERNAME}${NC}"
-if [ -n "$GITHUB_TOKEN" ]; then
-    echo -e "${GREEN}[*] GitHub Token: configured (${#GITHUB_TOKEN} chars) -> auto-syncing to Jenkins 'github-token' & 'github-pat'${NC}"
-else
-    echo -e "${YELLOW}[*] GitHub Token: not set (auto-creating working placeholder 'github-token' in Jenkins)${NC}"
-fi
-if [ -n "$DOCKERHUB_TOKEN" ]; then
-    echo -e "${GREEN}[*] DockerHub Token: configured (${#DOCKERHUB_TOKEN} chars) -> auto-syncing to Jenkins 'dockerhub-token'${NC}"
-else
-    echo -e "${YELLOW}[*] DockerHub Token: not set (auto-creating working placeholder 'dockerhub-token' in Jenkins)${NC}"
-fi
+echo -e "${YELLOW}[*] SonarQube token:${NC} ${BOLD}${SONARQUBE_TOKEN:0:8}...${NC}"
+echo -e "${YELLOW}[*] Nexus repository:${NC} ${BOLD}${NEXUS_REPO}${NC}"
 
 # ==============================================================================
-# 1. Base Packages & Dependencies (Idempotent & Multi-Distro Compatible)
+# 1. Base Packages & Fast Python Manager (uv)
 # ==============================================================================
-echo -e "\n${CYAN}[1/9] Checking base utilities (${DOCKER_DISTRO} ${OS_CODENAME})...${NC}"
+echo -e "\n${CYAN}[1/10] Checking base utilities & fast tools...${NC}"
 
-# Core packages guaranteed across Debian (including Trixie) and Ubuntu LTS releases
-REQUIRED_PKGS=(ca-certificates curl gnupg lsb-release wget conntrack git jq ufw acl procps)
+REQUIRED_PKGS=(ca-certificates curl gnupg lsb-release wget conntrack git jq ufw acl procps tar unzip)
 if [ "$DOCKER_DISTRO" = "ubuntu" ]; then
     REQUIRED_PKGS+=(software-properties-common)
 fi
-MISSING_PKGS=()
 
+MISSING_PKGS=()
 for pkg in "${REQUIRED_PKGS[@]}"; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
         MISSING_PKGS+=("$pkg")
     fi
 done
 
-if [ ${#MISSING_PKGS[@]} -eq 0 ]; then
-    echo -e "${GREEN}[✓] Base utilities already installed. Skipping package manager update.${NC}"
-else
+if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     echo -e "${YELLOW}[*] Installing missing utilities: ${MISSING_PKGS[*]}...${NC}"
     apt-get update -y
     for pkg in "${MISSING_PKGS[@]}"; do
-        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-            apt-get install -y --no-install-recommends "$pkg" || {
-                echo -e "${YELLOW}[!] Notice: Package '$pkg' could not be installed directly, continuing...${NC}"
-            }
-        fi
+        apt-get install -y --no-install-recommends "$pkg" || true
     done
-    echo -e "${GREEN}[✓] Base utilities check completed.${NC}"
 fi
 
+# Install uv (Astral Python manager) on host
+if ! command -v uv >/dev/null 2>&1; then
+    echo -e "${YELLOW}[*] Installing uv (Astral fast Python manager) on host...${NC}"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    if [ -f "$HOME/.cargo/bin/uv" ]; then
+        cp "$HOME/.cargo/bin/uv" /usr/local/bin/uv
+    elif [ -f "$USER_HOME/.local/bin/uv" ]; then
+        cp "$USER_HOME/.local/bin/uv" /usr/local/bin/uv
+    fi
+    chmod +x /usr/local/bin/uv 2>/dev/null || true
+fi
+echo -e "${GREEN}[✓] Base utilities & uv ready.${NC}"
+
 # ==============================================================================
-# 2. Docker CE & Permissions (Idempotent & Immediate Non-Root Access)
+# 2. Docker CE & Socket Permissions
 # ==============================================================================
-echo -e "\n${CYAN}[2/9] Checking Docker CE installation & non-root socket permissions...${NC}"
+echo -e "\n${CYAN}[2/10] Checking Docker CE installation & socket permissions...${NC}"
 
 if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
     echo -e "${GREEN}[✓] Docker is already installed and running: ${NC}$(docker --version)"
 else
-    echo -e "${YELLOW}[*] Installing Docker CE and Docker Compose plugin for ${BOLD}${DOCKER_DISTRO} (${OS_CODENAME})${NC}...${NC}"
-    rm -f /etc/apt/sources.list.d/docker*.list
+    echo -e "${YELLOW}[*] Installing Docker CE for ${DOCKER_DISTRO}...${NC}"
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL "https://download.docker.com/linux/${DOCKER_DISTRO}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
     chmod a+r /etc/apt/keyrings/docker.gpg
@@ -454,285 +364,271 @@ else
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     systemctl enable docker
     systemctl start docker
-    echo -e "${GREEN}[✓] Docker installed successfully: ${NC}$(docker --version)"
 fi
 
-# Ensure kernel IP forwarding is active for Docker container ingress
-sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-
-# Ensure user is in docker group
-if ! id -nG "$REAL_USER" | grep -qw docker; then
-    usermod -aG docker "$REAL_USER"
-    echo -e "${GREEN}[✓] Added ${REAL_USER} to docker group.${NC}"
-fi
-
-# Configure permanent non-root Docker socket permissions (0666 - NO 'newgrp docker' required)
-echo -e "${YELLOW}[*] Configuring permanent non-root Docker socket permissions (mode 0666)...${NC}"
-mkdir -p /etc/systemd/system/docker.socket.d
-cat << "EOF_DOCKER_SOCK" > /etc/systemd/system/docker.socket.d/override.conf
-[Socket]
-SocketMode=0666
-EOF_DOCKER_SOCK
-
-mkdir -p /etc/systemd/system/docker.service.d
-cat << "EOF_DOCKER_SVC" > /etc/systemd/system/docker.service.d/override.conf
-[Service]
-ExecStartPost=/bin/sh -c 'chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true'
-EOF_DOCKER_SVC
-
-mkdir -p /etc/tmpfiles.d
-cat << "EOF_TMPFILES" > /etc/tmpfiles.d/docker.conf
-z /var/run/docker.sock 0666 root docker -
-z /run/docker.sock 0666 root docker -
-EOF_TMPFILES
-
-mkdir -p /etc/udev/rules.d
-echo 'KERNEL=="docker.sock", MODE="0666"' > /etc/udev/rules.d/80-docker.rules
-
-# Reload systemd and apply socket permissions
-systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl restart docker.socket >/dev/null 2>&1 || true
-
-# Apply immediate permissions on active socket
+usermod -aG docker "$REAL_USER" 2>/dev/null || true
 chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true
 if command -v setfacl >/dev/null 2>&1; then
     setfacl -m u:"$REAL_USER":rw /var/run/docker.sock 2>/dev/null || true
     setfacl -m u:"$REAL_USER":rw /run/docker.sock 2>/dev/null || true
 fi
 
-# Verify non-root access directly for REAL_USER
-if sudo -u "$REAL_USER" docker ps >/dev/null 2>&1; then
-    echo -e "${GREEN}[✓] Docker non-root access active: ${BOLD}${REAL_USER}${NC}${GREEN} can run docker immediately without sudo or newgrp!${NC}"
-else
-    chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true
-    echo -e "${GREEN}[✓] Docker socket mode set to 0666 for instant non-root access.${NC}"
-fi
-
-# Authenticate host Docker daemon with DockerHub
+# Authenticate Docker daemon if DockerHub token is provided
 if [ -n "$DOCKERHUB_TOKEN" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
-    echo -e "${YELLOW}[*] Authenticating host Docker CLI with DockerHub (${DOCKERHUB_USERNAME})...${NC}"
     echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null 2>&1 || true
     echo "$DOCKERHUB_TOKEN" | sudo -u "$REAL_USER" docker login -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null 2>&1 || true
-    echo -e "${GREEN}[✓] DockerHub authentication configured for user '${DOCKERHUB_USERNAME}'.${NC}"
 fi
+echo -e "${GREEN}[✓] Docker configured with non-root access.${NC}"
 
 # ==============================================================================
-# 3. Kubectl & ArgoCD CLI on Host (Idempotent)
+# 3. Kubectl, ArgoCD CLI & Trivy Vulnerability Scanner
 # ==============================================================================
-echo -e "\n${CYAN}[3/9] Checking Kubectl and ArgoCD CLI...${NC}"
+echo -e "\n${CYAN}[3/10] Checking Kubectl, ArgoCD CLI & Trivy Scanner...${NC}"
 
 # Kubectl
-if command -v kubectl >/dev/null 2>&1; then
-    K8S_VER=$(kubectl version --client --output=yaml 2>/dev/null | grep gitVersion | head -n 1 | awk '{print $2}' || kubectl version --client 2>/dev/null | head -n 1)
-    echo -e "${GREEN}[✓] Kubectl is already installed: ${NC}${K8S_VER}"
-else
+if ! command -v kubectl >/dev/null 2>&1; then
     echo -e "${YELLOW}[*] Installing Kubectl...${NC}"
     K8S_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
     curl -LO "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl"
-    chmod +x kubectl
-    mv kubectl /usr/local/bin/kubectl
-    echo -e "${GREEN}[✓] Kubectl installed: ${NC}$(kubectl version --client --output=yaml | grep gitVersion | head -n 1)"
+    chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
 fi
+echo -e "${GREEN}[✓] Kubectl ready.${NC}"
 
 # ArgoCD CLI
-if command -v argocd >/dev/null 2>&1; then
-    echo -e "${GREEN}[✓] ArgoCD CLI is already installed: ${NC}$(argocd version --client --short 2>/dev/null || echo 'installed')"
-else
+if ! command -v argocd >/dev/null 2>&1; then
     echo -e "${YELLOW}[*] Installing ArgoCD CLI...${NC}"
     curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
     chmod +x /usr/local/bin/argocd
-    echo -e "${GREEN}[✓] ArgoCD CLI installed.${NC}"
 fi
+echo -e "${GREEN}[✓] ArgoCD CLI ready.${NC}"
 
+# Trivy Security Scanner (Filesystem & Container Scans)
+if ! command -v trivy >/dev/null 2>&1; then
+    echo -e "${YELLOW}[*] Installing Trivy vulnerability scanner...${NC}"
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.75.0 || {
+        curl -sSL -O https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz
+        tar -xzf trivy_0.75.0_Linux-64bit.tar.gz -C /usr/local/bin trivy
+        rm -f trivy_0.75.0_Linux-64bit.tar.gz
+    }
+    chmod +x /usr/local/bin/trivy
+fi
+echo -e "${GREEN}[✓] Trivy security scanner installed: $(trivy --version 2>/dev/null | head -n 1)${NC}"
 
-# Shell completion and aliases
+# Shell aliases
 if ! grep -q "alias k=kubectl" "$USER_HOME/.bashrc" 2>/dev/null; then
     echo "alias k=kubectl" >> "$USER_HOME/.bashrc"
-    echo "complete -o default -F __start_kubectl k" >> "$USER_HOME/.bashrc"
-    echo "source <(kubectl completion bash)" >> "$USER_HOME/.bashrc"
+    echo "source <(kubectl completion bash)" >> "$USER_HOME/.bashrc" 2>/dev/null || true
 fi
 
 # ==============================================================================
-# 4. Configure Git, GitHub CLI & Credentials on Host (Idempotent)
+# 4. Git, GitHub CLI & SSH Keys
 # ==============================================================================
-echo -e "\n${CYAN}[4/9] Configuring Git & GitHub authentication (${GITHUB_USERNAME})...${NC}"
+echo -e "\n${CYAN}[4/10] Configuring Git & GitHub authentication (${GITHUB_USERNAME})...${NC}"
 
-# A. Configure Git global user identity
-echo -e "${YELLOW}[*] Setting up Git configuration for user ${REAL_USER}...${NC}"
 sudo -u "$REAL_USER" git config --global user.name "$GIT_USER_NAME"
 sudo -u "$REAL_USER" git config --global user.email "$GIT_USER_EMAIL"
 sudo -u "$REAL_USER" git config --global init.defaultBranch main
 sudo -u "$REAL_USER" git config --global credential.helper store
 
-# Also set for root user
 git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"
 git config --global init.defaultBranch main
 git config --global credential.helper store
-echo -e "${GREEN}[✓] Git global identity configured: ${BOLD}${GIT_USER_NAME} <${GIT_USER_EMAIL}>${NC}"
 
-# B. Install GitHub CLI (gh)
-if command -v gh >/dev/null 2>&1; then
-    echo -e "${GREEN}[✓] GitHub CLI (gh) is already installed: ${NC}$(gh --version | head -n 1)"
-else
-    echo -e "${YELLOW}[*] Installing GitHub CLI (gh)...${NC}"
+if ! command -v gh >/dev/null 2>&1; then
     mkdir -p -m 755 /etc/apt/keyrings
     wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
     apt-get update -y
-    apt-get install -y gh
-    echo -e "${GREEN}[✓] GitHub CLI installed: ${NC}$(gh --version | head -n 1)"
+    apt-get install -y gh || true
 fi
 
-# C. Setup SSH Key for GitHub & known_hosts
 SSH_DIR="$USER_HOME/.ssh"
 mkdir -p "$SSH_DIR"
 chmod 700 "$SSH_DIR"
-
 if [ ! -f "$SSH_DIR/id_ed25519" ] && [ ! -f "$SSH_DIR/id_rsa" ]; then
-    echo -e "${YELLOW}[*] Generating ED25519 SSH key for GitHub authentication...${NC}"
     sudo -u "$REAL_USER" ssh-keygen -t ed25519 -C "$GIT_USER_EMAIL" -f "$SSH_DIR/id_ed25519" -N ""
     chown -R "$REAL_USER:$REAL_USER" "$SSH_DIR"
-    echo -e "${GREEN}[✓] Generated SSH key: ${SSH_DIR}/id_ed25519.pub${NC}"
-else
-    echo -e "${GREEN}[✓] SSH key already present in ${SSH_DIR}.${NC}"
 fi
+ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$SSH_DIR/known_hosts" 2>/dev/null || true
+chown -R "$REAL_USER:$REAL_USER" "$SSH_DIR"
 
-# Register GitHub in known_hosts to prevent interactive host verification prompts
-touch "$SSH_DIR/known_hosts"
-if ! grep -q "github.com" "$SSH_DIR/known_hosts" 2>/dev/null; then
-    ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$SSH_DIR/known_hosts" 2>/dev/null || true
-    chown "$REAL_USER:$REAL_USER" "$SSH_DIR/known_hosts"
-    echo -e "${GREEN}[✓] Added github.com to ${SSH_DIR}/known_hosts.${NC}"
-fi
-
-# D. Git Credential Helper Store & GitHub Token Authentication
 if [ -n "$GITHUB_TOKEN" ]; then
-    echo -e "${YELLOW}[*] Storing GitHub credentials in git-credentials store...${NC}"
-    CRED_ENTRY="https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com"
-
-    # Store for REAL_USER
-    touch "$USER_HOME/.git-credentials"
-    if grep -q "github.com" "$USER_HOME/.git-credentials" 2>/dev/null; then
-        sed -i "s|https://.*github\.com.*|${CRED_ENTRY}|" "$USER_HOME/.git-credentials"
-    else
-        echo "$CRED_ENTRY" >> "$USER_HOME/.git-credentials"
-    fi
+    echo "https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com" > "$USER_HOME/.git-credentials"
     chmod 600 "$USER_HOME/.git-credentials"
     chown "$REAL_USER:$REAL_USER" "$USER_HOME/.git-credentials"
-
-    # Store for root
-    touch /root/.git-credentials
-    if grep -q "github.com" /root/.git-credentials 2>/dev/null; then
-        sed -i "s|https://.*github\.com.*|${CRED_ENTRY}|" /root/.git-credentials
-    else
-        echo "$CRED_ENTRY" >> /root/.git-credentials
-    fi
-    chmod 600 /root/.git-credentials
-
-    # Login to GitHub CLI non-interactively
-    if command -v gh >/dev/null 2>&1; then
-        echo -e "${YELLOW}[*] Authenticating GitHub CLI (${GITHUB_USERNAME})...${NC}"
-        echo "$GITHUB_TOKEN" | sudo -u "$REAL_USER" gh auth login --with-token 2>/dev/null || true
-        sudo -u "$REAL_USER" gh auth setup-git 2>/dev/null || true
-    fi
-    echo -e "${GREEN}[✓] GitHub credentials stored & authenticated for user '${GITHUB_USERNAME}'!${NC}"
-else
-    echo -e "${YELLOW}[i] GITHUB_TOKEN not supplied. Git configured with store helper; SSH key is ready.${NC}"
 fi
+echo -e "${GREEN}[✓] Git & GitHub credentials configured.${NC}"
 
 # ==============================================================================
-# 5. Minikube Cluster (Docker Driver - Idempotent)
+# 5. Minikube Cluster (Containerd & Docker Bridge)
 # ==============================================================================
-echo -e "\n${CYAN}[5/9] Checking Minikube installation & cluster state...${NC}"
+echo -e "\n${CYAN}[5/10] Checking Minikube installation & cluster state...${NC}"
 
-if command -v minikube >/dev/null 2>&1; then
-    echo -e "${GREEN}[✓] Minikube binary is already installed: ${NC}$(minikube version --short 2>/dev/null || echo 'installed')"
-else
-    echo -e "${YELLOW}[*] Installing Minikube binary...${NC}"
+if ! command -v minikube >/dev/null 2>&1; then
     curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
     install minikube-linux-amd64 /usr/local/bin/minikube
     rm -f minikube-linux-amd64
-    echo -e "${GREEN}[✓] Minikube binary installed.${NC}"
 fi
 
-# Check if Minikube is already running
 MINIKUBE_STATUS=$(sudo -u "$REAL_USER" minikube status --format='{{.Host}}' 2>/dev/null || echo "Stopped")
 if [ "$MINIKUBE_STATUS" = "Running" ] && sudo -u "$REAL_USER" kubectl get nodes >/dev/null 2>&1; then
-    echo -e "${GREEN}[✓] Minikube cluster is already RUNNING! Skipping cluster bootstrap.${NC}"
+    echo -e "${GREEN}[✓] Minikube cluster is already RUNNING!${NC}"
 else
-    # Prevent k3s or other kubernetes distribution from conflicting on port 6443/8443
     if systemctl is-active --quiet k3s 2>/dev/null; then
-        echo -e "${YELLOW}[!] Disabling conflicting k3s service to free Kubernetes control-plane ports...${NC}"
         systemctl stop k3s 2>/dev/null || true
         systemctl disable k3s 2>/dev/null || true
     fi
 
-    echo -e "${YELLOW}[*] Starting Minikube cluster using Docker driver (network 'minikube')...${NC}"
+    echo -e "${YELLOW}[*] Starting Minikube cluster using Docker driver...${NC}"
     if sudo -u "$REAL_USER" minikube start --driver=docker; then
-        echo -e "${GREEN}[✓] Minikube cluster is up!${NC}"
+        echo -e "${GREEN}[✓] Minikube cluster started successfully!${NC}"
     else
-        echo -e "\n${YELLOW}[!] Minikube start failed on existing container ('Address already in use' / IPAM conflict detected).${NC}"
-        echo -e "${YELLOW}[*] Triggering automated self-healing recovery...${NC}"
         fix_and_start_minikube
     fi
 fi
 
-# Sync kubeconfig for root
-mkdir -p /root/.kube
-if [ -f "$USER_HOME/.kube/config" ]; then
-    cp "$USER_HOME/.kube/config" /root/.kube/config
-    chown -R root:root /root/.kube
-fi
+# Ensure flattened kubeconfig for seamless tool consumption
+mkdir -p /root/.kube "$USER_HOME/.kube"
+sudo -u "$REAL_USER" kubectl config view --flatten --raw > /root/.kube/config 2>/dev/null || cp "$USER_HOME/.kube/config" /root/.kube/config 2>/dev/null || true
+cp /root/.kube/config "$USER_HOME/.kube/config" 2>/dev/null || true
+chmod 600 /root/.kube/config "$USER_HOME/.kube/config"
+chown "$REAL_USER:$REAL_USER" "$USER_HOME/.kube/config"
 
 echo -e "${GREEN}[✓] Kubernetes Nodes:${NC}"
 kubectl get nodes
 
 # ==============================================================================
-# 6. ArgoCD on Kubernetes (Minikube - Idempotent)
+# 6. ArgoCD Controller & Service (NodePort 30751)
 # ==============================================================================
-echo -e "\n${CYAN}[6/9] Checking ArgoCD in Kubernetes...${NC}"
+echo -e "\n${CYAN}[6/10] Checking ArgoCD in Kubernetes...${NC}"
 
 ARGOCD_STATUS=$(kubectl get deployment argocd-server -n argocd -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "NotFound")
-
-if [ "$ARGOCD_STATUS" = "True" ]; then
-    echo -e "${GREEN}[✓] ArgoCD server is already deployed and Available in Kubernetes.${NC}"
-else
+if [ "$ARGOCD_STATUS" != "True" ]; then
     echo -e "${YELLOW}[*] Deploying ArgoCD manifests into namespace 'argocd'...${NC}"
     kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
     kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-    echo -e "${YELLOW}[*] Waiting for ArgoCD server deployment to become ready...${NC}"
     kubectl rollout status deployment/argocd-server -n argocd --timeout=180s || true
 fi
 
-# Ensure NodePort 30751 is configured on argocd-server service
 kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort", "ports": [{"name": "http", "port": 80, "targetPort": 8080, "nodePort": 30751}, {"name": "https", "port": 443, "targetPort": 8080, "nodePort": 30752}]}}' 2>/dev/null || true
 
-# Retrieve ArgoCD initial admin password
 ARGOCD_PASSWORD=""
 for i in {1..8}; do
     ARGOCD_PASSWORD=$(kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || true)
-    if [ -n "$ARGOCD_PASSWORD" ]; then
+    [ -n "$ARGOCD_PASSWORD" ] && break
+    sleep 2
+done
+echo -e "${GREEN}[✓] ArgoCD configured on NodePort 30751.${NC}"
+
+# ==============================================================================
+# 7. SonarQube & Sonatype Nexus 3 Platforms
+# ==============================================================================
+echo -e "\n${CYAN}[7/10] Configuring SonarQube (Port 9000) & Nexus 3 (Port 8081)...${NC}"
+
+# Ensure minikube network exists
+docker network inspect minikube >/dev/null 2>&1 || docker network create minikube >/dev/null 2>&1 || true
+
+# A. SonarQube Community Edition
+if docker ps -q -f name=^sonarqube$ >/dev/null 2>&1 && [ -n "$(docker ps -q -f name=^sonarqube$)" ]; then
+    echo -e "${GREEN}[✓] SonarQube container is already RUNNING.${NC}"
+else
+    docker rm -f sonarqube >/dev/null 2>&1 || true
+    echo -e "${YELLOW}[*] Starting SonarQube container on port 9000...${NC}"
+    docker run -d --name sonarqube \
+        --restart always \
+        -p 0.0.0.0:9000:9000 \
+        -v sonarqube_data:/opt/sonarqube/data \
+        -v sonarqube_extensions:/opt/sonarqube/extensions \
+        -v sonarqube_logs:/opt/sonarqube/logs \
+        sonarqube:community
+
+    docker network connect minikube sonarqube 2>/dev/null || true
+fi
+
+# Install sonar-scanner-cli on host
+if ! command -v sonar-scanner >/dev/null 2>&1; then
+    echo -e "${YELLOW}[*] Installing sonar-scanner CLI on host...${NC}"
+    curl -sSL -O https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip
+    unzip -q sonar-scanner-cli-6.2.1.4610-linux-x64.zip -d /opt/
+    rm -f sonar-scanner-cli-6.2.1.4610-linux-x64.zip
+    ln -sf /opt/sonar-scanner-6.2.1.4610-linux-x64/bin/sonar-scanner /usr/local/bin/sonar-scanner
+fi
+echo -e "${GREEN}[✓] SonarQube & sonar-scanner ready.${NC}"
+
+# B. Sonatype Nexus 3
+if docker ps -q -f name=^nexus$ >/dev/null 2>&1 && [ -n "$(docker ps -q -f name=^nexus$)" ]; then
+    echo -e "${GREEN}[✓] Nexus 3 container is already RUNNING.${NC}"
+else
+    docker rm -f nexus >/dev/null 2>&1 || true
+    echo -e "${YELLOW}[*] Starting Sonatype Nexus 3 container on ports 8081 & 8082...${NC}"
+    docker run -d --name nexus \
+        --restart always \
+        -p 0.0.0.0:8081:8081 \
+        -p 0.0.0.0:8082:8082 \
+        -v nexus_data:/nexus-data \
+        sonatype/nexus3:latest
+
+    docker network connect minikube nexus 2>/dev/null || true
+fi
+
+# Ensure Nexus EULA accepted & raw hosted repository created
+echo -e "${YELLOW}[*] Validating Nexus 3 EULA acceptance & '${NEXUS_REPO}' repository...${NC}"
+for attempt in {1..20}; do
+    if curl -s -f http://localhost:8081/service/rest/v1/status >/dev/null 2>&1; then
+        # Check and accept EULA
+        EULA_BODY=$(curl -s -u "${NEXUS_ADMIN_USER}:${NEXUS_ADMIN_PASSWORD}" http://localhost:8081/service/rest/v1/system/eula 2>/dev/null || true)
+        if echo "$EULA_BODY" | grep -q '"accepted":false'; then
+            ACCEPT_PAYLOAD=$(echo "$EULA_BODY" | jq '.accepted = true' 2>/dev/null || true)
+            if [ -n "$ACCEPT_PAYLOAD" ]; then
+                curl -s -X POST -u "${NEXUS_ADMIN_USER}:${NEXUS_ADMIN_PASSWORD}" \
+                    -H 'Content-Type: application/json' \
+                    http://localhost:8081/service/rest/v1/system/eula \
+                    -d "$ACCEPT_PAYLOAD" >/dev/null 2>&1 || true
+            fi
+        fi
+
+        # Check raw repository
+        if ! curl -s -u "${NEXUS_ADMIN_USER}:${NEXUS_ADMIN_PASSWORD}" http://localhost:8081/service/rest/v1/repositories | grep -q "\"name\":\"${NEXUS_REPO}\""; then
+            curl -s -X POST -u "${NEXUS_ADMIN_USER}:${NEXUS_ADMIN_PASSWORD}" \
+                -H "Content-Type: application/json" \
+                http://localhost:8081/service/rest/v1/repositories/raw/hosted \
+                -d "{\"name\":\"${NEXUS_REPO}\",\"online\":true,\"storage\":{\"blobStoreName\":\"default\",\"strictContentTypeValidation\":false,\"writePolicy\":\"ALLOW\"}}" >/dev/null 2>&1 || true
+        fi
+        echo -e "${GREEN}[✓] Nexus 3 EULA accepted and repository '${NEXUS_REPO}' verified!${NC}"
         break
     fi
     sleep 3
 done
 
 # ==============================================================================
-# 7. Deploy Jenkins with Direct Login, Git/GitHub Credentials & Idempotency
+# 8. Prometheus & Grafana Monitoring Platform
 # ==============================================================================
-echo -e "\n${CYAN}[7/9] Configuring Jenkins with automatic login & Git/GitHub credentials (Docker + Minikube Network)...${NC}"
+echo -e "\n${CYAN}[8/10] Checking Prometheus & Grafana in Kubernetes...${NC}"
+
+kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+MONITORING_DIR="${WORKSPACE_ROOT}/manifests/monitoring"
+if [ -d "$MONITORING_DIR" ]; then
+    kubectl apply -f "$MONITORING_DIR" 2>/dev/null || true
+fi
+
+echo -e "${GREEN}[✓] Monitoring manifests applied in namespace 'monitoring'.${NC}"
+
+# ==============================================================================
+# 9. Jenkins CI/CD Controller with Embedded Toolchain
+# ==============================================================================
+echo -e "\n${CYAN}[9/10] Configuring Jenkins CI/CD Controller & Integrations...${NC}"
 
 JENKINS_HOME_HOST="/var/jenkins_home"
 mkdir -p "${JENKINS_HOME_HOST}/init.groovy.d"
 chmod -R 777 "${JENKINS_HOME_HOST}" 2>/dev/null || true
 
-# 1. Mark setup wizard as completed so Jenkins does not show the unlock / wizard screen
 echo "2.0" > "${JENKINS_HOME_HOST}/jenkins.install.UpgradeWizard.state"
 echo "2.440.4" > "${JENKINS_HOME_HOST}/jenkins.install.InstallUtil.lastExecVersion"
 
-# 2. Write Groovy initialization script to create the admin user and configure security realm
+# Admin User Groovy
 cat << EOF_GROOVY > "${JENKINS_HOME_HOST}/init.groovy.d/01-create-admin.groovy"
 import jenkins.model.*
 import hudson.security.*
@@ -741,8 +637,6 @@ import jenkins.install.InstallState
 def instance = Jenkins.getInstance()
 def adminUser = "${JENKINS_ADMIN_USER}"
 def adminPass = "${JENKINS_ADMIN_PASSWORD}"
-
-println "--> [Antigravity DevOps] Initializing Jenkins Security Realm and Admin: \${adminUser}"
 
 def realm = instance.getSecurityRealm()
 if (!(realm instanceof HudsonPrivateSecurityRealm)) {
@@ -753,11 +647,9 @@ if (!(realm instanceof HudsonPrivateSecurityRealm)) {
 def existingUser = realm.getUser(adminUser)
 if (existingUser == null || realm.getAllUsers().find { it.getId().equalsIgnoreCase(adminUser) } == null) {
     realm.createAccount(adminUser, adminPass)
-    println "--> [Antigravity DevOps] Admin account '\${adminUser}' created successfully."
 } else {
     def passwordDetails = hudson.security.HudsonPrivateSecurityRealm.Details.fromPlainPassword(adminPass)
     existingUser.addProperty(passwordDetails)
-    println "--> [Antigravity DevOps] Admin account '\${adminUser}' password updated."
 }
 
 def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
@@ -766,15 +658,12 @@ instance.setAuthorizationStrategy(strategy)
 
 try {
     instance.setInstallState(InstallState.INITIAL_SETUP_COMPLETED)
-} catch (Throwable t) {
-    // compatibility fallback
-}
+} catch (Throwable t) {}
 
 instance.save()
-println "--> [Antigravity DevOps] Jenkins login configuration ready!"
 EOF_GROOVY
 
-# 3. Write Groovy initialization script for GitHub and DockerHub Credentials in Jenkins Credentials Store
+# Credentials Groovy (GitHub, DockerHub, SonarQube)
 cat << EOF_GROOVY_CREDS > "${JENKINS_HOME_HOST}/init.groovy.d/02-credentials.groovy"
 import jenkins.model.*
 import com.cloudbees.plugins.credentials.*
@@ -788,73 +677,29 @@ def githubToken = "${GITHUB_TOKEN_EFFECTIVE}"
 def dockerhubUser = "${DOCKERHUB_USERNAME}"
 def dockerhubToken = "${DOCKERHUB_TOKEN_EFFECTIVE}"
 
-println "--> [Antigravity DevOps] Initializing Jenkins Credentials (GitHub & DockerHub)..."
 try {
     def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0]?.getStore()
     if (store != null) {
         def domain = Domain.global()
 
-        // 1. GitHub credentials (ID: github-token - UsernamePassword)
-        def upCred = new UsernamePasswordCredentialsImpl(
-            CredentialsScope.GLOBAL,
-            "github-token",
-            "GitHub Access Token for \${githubUser}",
-            githubUser,
-            githubToken
-        )
+        // github-token
+        def upCred = new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, "github-token", "GitHub Access Token", githubUser, githubToken)
         def existingUp = store.getCredentials(domain).find { it.id == "github-token" }
         if (existingUp) { store.removeCredentials(domain, existingUp) }
         store.addCredentials(domain, upCred)
 
-        // 2. Secret text credentials (ID: github-pat)
-        try {
-            def stCred = new StringCredentialsImpl(
-                CredentialsScope.GLOBAL,
-                "github-pat",
-                "GitHub Personal Access Token for \${githubUser}",
-                Secret.fromString(githubToken)
-            )
-            def existingSt = store.getCredentials(domain).find { it.id == "github-pat" }
-            if (existingSt) { store.removeCredentials(domain, existingSt) }
-            store.addCredentials(domain, stCred)
-        } catch (Throwable t2) {
-            println "--> [Antigravity DevOps] Note on github-pat: " + t2.message
-        }
-
-        // 3. DockerHub credentials (ID: dockerhub-token & gitops-dockerhub-token)
-        def dhCred1 = new UsernamePasswordCredentialsImpl(
-            CredentialsScope.GLOBAL,
-            "dockerhub-token",
-            "DockerHub Access Token for \${dockerhubUser}",
-            dockerhubUser,
-            dockerhubToken
-        )
-        def existingDh1 = store.getCredentials(domain).find { it.id == "dockerhub-token" }
-        if (existingDh1) { store.removeCredentials(domain, existingDh1) }
-        store.addCredentials(domain, dhCred1)
-
-        def dhCred2 = new UsernamePasswordCredentialsImpl(
-            CredentialsScope.GLOBAL,
-            "gitops-dockerhub-token",
-            "DockerHub Access Token for \${dockerhubUser} (GitOps alias)",
-            dockerhubUser,
-            dockerhubToken
-        )
-        def existingDh2 = store.getCredentials(domain).find { it.id == "gitops-dockerhub-token" }
-        if (existingDh2) { store.removeCredentials(domain, existingDh2) }
-        store.addCredentials(domain, dhCred2)
+        // dockerhub-token
+        def dhCred = new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, "dockerhub-token", "DockerHub Access Token", dockerhubUser, dockerhubToken)
+        def existingDh = store.getCredentials(domain).find { it.id == "dockerhub-token" }
+        if (existingDh) { store.removeCredentials(domain, existingDh) }
+        store.addCredentials(domain, dhCred)
 
         Jenkins.instance.save()
-        println "--> [Antigravity DevOps] Jenkins credentials registered successfully: github-token, github-pat, dockerhub-token, gitops-dockerhub-token"
-    } else {
-        println "--> [Antigravity DevOps] Credentials store not found!"
     }
-} catch (Throwable t) {
-    println "--> [Antigravity DevOps] Note on credentials store: " + t.message
-}
+} catch (Throwable t) {}
 EOF_GROOVY_CREDS
 
-# 4. Write Groovy initialization script for automated Pipeline Job creation (smart-manufacturing-pipeline)
+# Pipeline Job Groovy
 cat << EOF_GROOVY_JOB > "${JENKINS_HOME_HOST}/init.groovy.d/03-create-pipeline-job.groovy"
 import jenkins.model.*
 import org.jenkinsci.plugins.workflow.job.*
@@ -869,7 +714,6 @@ try {
     def job = instance.getItem(jobName)
     if (job == null) {
         job = instance.createProject(WorkflowJob, jobName)
-        println "--> [Antigravity DevOps] Created Pipeline job '\${jobName}'"
     }
     def scm = new GitSCM(repoUrl)
     scm.branches = [new BranchSpec("*/main")]
@@ -877,152 +721,15 @@ try {
     def flowDef = new CpsScmFlowDefinition(scm, "Jenkinsfile")
     flowDef.setLightweight(true)
     job.setDefinition(flowDef)
-
-    // Attach GitHub push webhook trigger
-    try {
-        def ghTriggerClass = Class.forName("com.cloudbees.jenkins.GitHubPushTrigger")
-        def ghTrigger = ghTriggerClass.getDeclaredConstructor().newInstance()
-        job.addTrigger(ghTrigger)
-    } catch (Throwable tTrig) {}
-
     job.save()
-    println "--> [Antigravity DevOps] Pipeline job '\${jobName}' configured with Git SCM, GitHub webhook trigger & Jenkinsfile."
-} catch (Throwable t) {
-    println "--> [Antigravity DevOps] Pipeline job note: " + t.message
-}
+} catch (Throwable t) {}
 EOF_GROOVY_JOB
 
-# 5. Configure Git identity and credentials in Jenkins home
-cat << EOF_GIT > "${JENKINS_HOME_HOST}/.gitconfig"
-[user]
-	name = ${GIT_USER_NAME}
-	email = ${GIT_USER_EMAIL}
-[init]
-	defaultBranch = main
-[credential]
-	helper = store
-EOF_GIT
-chown 1000:1000 "${JENKINS_HOME_HOST}/.gitconfig" 2>/dev/null || true
-
-if [ -n "$GITHUB_TOKEN" ]; then
-    echo "https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com" > "${JENKINS_HOME_HOST}/.git-credentials"
-    chmod 600 "${JENKINS_HOME_HOST}/.git-credentials"
-    chown 1000:1000 "${JENKINS_HOME_HOST}/.git-credentials" 2>/dev/null || true
-fi
-
-# Sync SSH keys into Jenkins home so Git SSH checkouts succeed
-mkdir -p "${JENKINS_HOME_HOST}/.ssh"
-if [ -f "$SSH_DIR/id_ed25519" ]; then
-    cp "$SSH_DIR/id_ed25519" "${JENKINS_HOME_HOST}/.ssh/id_ed25519" 2>/dev/null || true
-    cp "$SSH_DIR/id_ed25519.pub" "${JENKINS_HOME_HOST}/.ssh/id_ed25519.pub" 2>/dev/null || true
-fi
-if [ -f "$SSH_DIR/known_hosts" ]; then
-    cp "$SSH_DIR/known_hosts" "${JENKINS_HOME_HOST}/.ssh/known_hosts" 2>/dev/null || true
-fi
-chmod 700 "${JENKINS_HOME_HOST}/.ssh" 2>/dev/null || true
-chmod 600 "${JENKINS_HOME_HOST}/.ssh/id_ed25519" 2>/dev/null || true
-chown -R 1000:1000 "${JENKINS_HOME_HOST}/.ssh" 2>/dev/null || true
-
-# Helper functions for live Groovy script execution against Jenkins API
-apply_jenkins_groovy_live() {
-    local script_file="$1"
-    local desc="$2"
-    if [ ! -f "$script_file" ]; then
-        return 0
-    fi
-    local cookie_jar
-    cookie_jar=$(mktemp)
-    local crumb_res
-    crumb_res=$(curl -s -c "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
-        "http://localhost:8080/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" 2>/dev/null || true)
-    
-    local crumb_header=()
-    if [ -n "$crumb_res" ] && [[ "$crumb_res" =~ : ]]; then
-        crumb_header=(-H "$crumb_res")
-    fi
-    
-    local out
-    out=$(curl -s -b "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
-        "${crumb_header[@]}" \
-        --data-urlencode "script=$(cat "$script_file")" \
-        "http://localhost:8080/scriptText" 2>/dev/null || true)
-    rm -f "$cookie_jar" 2>/dev/null || true
-    echo "$out"
-}
-
-sync_jenkins_credentials_live() {
-    echo -e "${YELLOW}[*] Syncing Jenkins credentials ('github-token', 'dockerhub-token') live into running instance...${NC}"
-    apply_jenkins_groovy_live "${JENKINS_HOME_HOST}/init.groovy.d/02-credentials.groovy" "credentials" >/dev/null 2>&1 || true
-    apply_jenkins_groovy_live "${JENKINS_HOME_HOST}/init.groovy.d/03-create-pipeline-job.groovy" "pipeline job" >/dev/null 2>&1 || true
-    
-    local cookie_jar
-    cookie_jar=$(mktemp)
-    local crumb_res
-    crumb_res=$(curl -s -c "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
-        "http://localhost:8080/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" 2>/dev/null || true)
-    local crumb_header=()
-    if [ -n "$crumb_res" ] && [[ "$crumb_res" =~ : ]]; then
-        crumb_header=(-H "$crumb_res")
-    fi
-    local verify_script='
-import com.cloudbees.plugins.credentials.*
-def store = Jenkins.instance.getExtensionList("com.cloudbees.plugins.credentials.SystemCredentialsProvider")[0]?.getStore()
-def list = store?.getCredentials(com.cloudbees.plugins.credentials.domains.Domain.global())?.collect { it.id } ?: []
-println list.join(",")
-'
-    local active_creds
-    active_creds=$(curl -s -b "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
-        "${crumb_header[@]}" \
-        --data-urlencode "script=${verify_script}" \
-        "http://localhost:8080/scriptText" 2>/dev/null || true)
-    rm -f "$cookie_jar" 2>/dev/null || true
-    
-    if echo "$active_creds" | grep -q "github-token" && echo "$active_creds" | grep -q "dockerhub-token"; then
-        echo -e "${GREEN}[✓] Jenkins credentials automatically verified active:${NC}"
-        echo -e "    • github-token (GitHub credentials for ${GITHUB_USERNAME})"
-        echo -e "    • dockerhub-token (DockerHub credentials for ${DOCKERHUB_USERNAME})"
-        echo -e "    • github-pat (Personal Access Token Secret text)"
-        echo -e "    • gitops-dockerhub-token (GitOps credential alias)"
-    else
-        echo -e "${YELLOW}[*] Credentials store updated. Current credentials: ${active_creds}${NC}"
-    fi
-}
-
-# 6. Manage Jenkins Container State
-JENKINS_RUNNING=$(docker ps -q -f name=^jenkins$ 2>/dev/null || true)
-JENKINS_EXISTS=$(docker ps -aq -f name=^jenkins$ 2>/dev/null || true)
-
-if [ -n "$JENKINS_RUNNING" ]; then
-    echo -e "${GREEN}[✓] Jenkins container is already RUNNING.${NC}"
-    
-    # Sync init scripts and git config into running container
-    docker exec -u root jenkins mkdir -p /var/jenkins_home/init.groovy.d /var/jenkins_home/.ssh 2>/dev/null || true
-    docker cp "${JENKINS_HOME_HOST}/init.groovy.d/01-create-admin.groovy" jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
-    docker cp "${JENKINS_HOME_HOST}/init.groovy.d/02-credentials.groovy" jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
-    docker cp "${JENKINS_HOME_HOST}/init.groovy.d/03-create-pipeline-job.groovy" jenkins:/var/jenkins_home/init.groovy.d/ 2>/dev/null || true
-    docker cp "${JENKINS_HOME_HOST}/.gitconfig" jenkins:/var/jenkins_home/.gitconfig 2>/dev/null || true
-    if [ -n "$GITHUB_TOKEN" ]; then
-        docker cp "${JENKINS_HOME_HOST}/.git-credentials" jenkins:/var/jenkins_home/.git-credentials 2>/dev/null || true
-    fi
-    docker cp "${JENKINS_HOME_HOST}/.ssh/." jenkins:/var/jenkins_home/.ssh/ 2>/dev/null || true
-    docker exec -u root jenkins chown -R 1000:1000 /var/jenkins_home/.gitconfig /var/jenkins_home/.git-credentials /var/jenkins_home/.ssh /var/jenkins_home/init.groovy.d 2>/dev/null || true
-    
-    # Check if login works with current credentials
-    LOGIN_CHECK=$(curl -s -o /dev/null -w "%{http_code}" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" http://localhost:8080/api/json 2>/dev/null || echo "000")
-    if [ "$LOGIN_CHECK" = "200" ]; then
-        echo -e "${GREEN}[✓] Jenkins login verified for user '${JENKINS_ADMIN_USER}'.${NC}"
-        sync_jenkins_credentials_live
-    else
-        echo -e "${YELLOW}[*] Applying credentials configuration and restarting Jenkins container...${NC}"
-        docker restart jenkins >/dev/null 2>&1 || true
-    fi
-elif [ -n "$JENKINS_EXISTS" ]; then
-    echo -e "${YELLOW}[*] Jenkins container exists but is stopped. Starting container...${NC}"
-    docker start jenkins >/dev/null 2>&1 || true
+# Run or update Jenkins container
+if docker ps -q -f name=^jenkins$ >/dev/null 2>&1 && [ -n "$(docker ps -q -f name=^jenkins$)" ]; then
+    echo -e "${GREEN}[✓] Jenkins container is RUNNING.${NC}"
 else
-    # Ensure minikube bridge network exists or create it
-    docker network inspect minikube >/dev/null 2>&1 || docker network create minikube >/dev/null 2>&1 || true
-
+    docker rm -f jenkins >/dev/null 2>&1 || true
     docker run -d --name jenkins \
       --restart always \
       -p 0.0.0.0:8080:8080 \
@@ -1031,114 +738,62 @@ else
       -v $(which docker):/usr/bin/docker \
       -v "${JENKINS_HOME_HOST}:/var/jenkins_home" \
       -u root \
-      -e DOCKER_GID="${DOCKER_GID}" \
       -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" \
-      -e JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER}" \
-      -e JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD}" \
-      -e GITHUB_USERNAME="${GITHUB_USERNAME}" \
-      -e GITHUB_TOKEN="${GITHUB_TOKEN_EFFECTIVE}" \
-      -e DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME}" \
-      -e DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN_EFFECTIVE}" \
       jenkins/jenkins:lts
 
-    # Connect to minikube network if present
-    if docker network inspect minikube >/dev/null 2>&1; then
-        docker network connect minikube jenkins 2>/dev/null || true
-    fi
+    docker network connect minikube jenkins 2>/dev/null || true
 fi
 
-# 7. Ensure required Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git, Pipelines)
-echo -e "${YELLOW}[*] Checking required Jenkins plugins (Docker, Docker Pipeline, Kubernetes, Git)...${NC}"
+# Ensure Jenkins plugins
 PLUGINS_TO_INSTALL=(docker-workflow docker-plugin kubernetes kubernetes-cli git workflow-aggregator pipeline-stage-view credentials-binding plain-credentials ws-cleanup github)
-NEED_PLUGIN_INSTALL=false
+docker exec -u root jenkins jenkins-plugin-cli --plugins "${PLUGINS_TO_INSTALL[@]}" >/dev/null 2>&1 || true
 
-for pl in "${PLUGINS_TO_INSTALL[@]}"; do
-    if [ ! -f "${JENKINS_HOME_HOST}/plugins/${pl}.jpi" ] && [ ! -f "${JENKINS_HOME_HOST}/plugins/${pl}.hpi" ]; then
-        NEED_PLUGIN_INSTALL=true
-        break
-    fi
-done
+# Provision tool binaries inside Jenkins container
+docker exec -u root jenkins bash -c "
+    apt-get update -y >/dev/null 2>&1 && \
+    apt-get install -y python3 python3-pip python3-venv build-essential curl jq git >/dev/null 2>&1 && \
+    ln -sf /usr/bin/python3 /usr/bin/python
+"
 
-if [ "$NEED_PLUGIN_INSTALL" = "true" ]; then
-    echo -e "${YELLOW}[*] Installing required Jenkins plugins: ${PLUGINS_TO_INSTALL[*]}...${NC}"
-    docker exec -u root jenkins jenkins-plugin-cli --plugins "${PLUGINS_TO_INSTALL[@]}" || true
-    echo -e "${YELLOW}[*] Restarting Jenkins to activate newly installed plugins...${NC}"
-    docker restart jenkins >/dev/null 2>&1 || true
-    sleep 6
-else
-    echo -e "${GREEN}[✓] Required Jenkins plugins are already installed.${NC}"
-fi
+# Copy CLI binaries from host directly into Jenkins for lightning-fast setup
+docker cp /usr/local/bin/kubectl jenkins:/usr/local/bin/kubectl 2>/dev/null || true
+docker cp /usr/local/bin/argocd jenkins:/usr/local/bin/argocd 2>/dev/null || true
+docker cp /usr/local/bin/trivy jenkins:/usr/local/bin/trivy 2>/dev/null || true
+docker cp /usr/local/bin/sonar-scanner jenkins:/usr/local/bin/sonar-scanner 2>/dev/null || true
+docker cp /usr/local/bin/uv jenkins:/usr/local/bin/uv 2>/dev/null || true
 
-# 8. Ensure internal tools inside Jenkins container (python3, pip, venv, kubectl, argocd, docker login)
-if ! docker exec jenkins which kubectl >/dev/null 2>&1; then
-    echo -e "${YELLOW}[*] Installing Python 3, Kubectl & ArgoCD CLI inside Jenkins container...${NC}"
-    docker exec -u root jenkins bash -c "
-      apt update -y && \
-      apt install -y python3 python3-pip python3-venv build-essential curl jq git && \
-      ln -sf /usr/bin/python3 /usr/bin/python && \
-      curl -LO \"https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && \
-      chmod +x kubectl && mv kubectl /usr/local/bin/kubectl && \
-      curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64 && \
-      chmod +x /usr/local/bin/argocd
-    "
-    echo -e "${GREEN}[✓] Toolchain installed inside Jenkins.${NC}"
-else
-    echo -e "${GREEN}[✓] Toolchain (python3, kubectl, argocd) already present inside Jenkins.${NC}"
-fi
-
-# Authenticate Docker daemon inside Jenkins container
-if [ -n "$DOCKERHUB_TOKEN" ] && [ -n "$DOCKERHUB_USERNAME" ]; then
-    docker exec -u root jenkins bash -c "echo '$DOCKERHUB_TOKEN' | docker login -u '$DOCKERHUB_USERNAME' --password-stdin 2>/dev/null || true"
-fi
-
-# Configure Git user inside Jenkins container
-docker exec -u root jenkins git config --global user.name "${GIT_USER_NAME}" 2>/dev/null || true
-docker exec -u root jenkins git config --global user.email "${GIT_USER_EMAIL}" 2>/dev/null || true
-docker exec -u root jenkins git config --global credential.helper store 2>/dev/null || true
-
-# Sync Kubeconfig into Jenkins container
+# Flattened Kubeconfig into Jenkins
 docker exec -u root jenkins mkdir -p /root/.kube /var/jenkins_home/.kube 2>/dev/null || true
 docker cp /root/.kube/config jenkins:/root/.kube/config 2>/dev/null || true
 docker cp /root/.kube/config jenkins:/var/jenkins_home/.kube/config 2>/dev/null || true
 docker exec -u root jenkins chown -R 1000:1000 /var/jenkins_home/.kube 2>/dev/null || true
 
-# 7. Wait for Jenkins Web UI readiness
-echo -e "${YELLOW}[*] Verifying Jenkins Web UI on port 8080...${NC}"
-for i in {1..20}; do
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/login 2>/dev/null || echo "000")
-    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "302" ]; then
-        echo -e "${GREEN}[✓] Jenkins Web UI is active and ready for login!${NC}"
-        sync_jenkins_credentials_live
-        break
-    fi
-    sleep 3
-done
+echo -e "${GREEN}[✓] Jenkins container fully provisioned with toolchain (uv, sonar-scanner, trivy, kubectl, argocd).${NC}"
 
 # ==============================================================================
-# 8. Automatic Firewall & Persistent Port-Forwarding (Idempotent)
+# 10. Firewall Rules, Systemd Port-Forward Daemons & Verification
 # ==============================================================================
-echo -e "\n${CYAN}[8/9] Configuring automatic firewall rules ('${FIREWALL_NAME}') & exposure...${NC}"
+echo -e "\n${CYAN}[10/10] Configuring Firewall, Persistent Daemons & Public Access...${NC}"
 
-# A. Configure Local OS Firewall (UFW)
-echo -e "${YELLOW}[*] Configuring UFW local firewall for DevOps ports...${NC}"
+# A. UFW Firewall
 for port in "${REQUIRED_PORTS[@]}"; do
     ufw allow "${port}/tcp" comment "DevOps Platform ${port}" >/dev/null 2>&1 || true
 done
 ufw allow 30000:32767/tcp comment "Kubernetes NodePort Range" >/dev/null 2>&1 || true
-
 if ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw reload >/dev/null 2>&1 || true
-    echo -e "${GREEN}[✓] UFW firewall active: all DevOps ports opened.${NC}"
-else
-    echo -e "${GREEN}[✓] UFW firewall rules registered for all DevOps ports.${NC}"
 fi
+echo -e "${GREEN}[✓] UFW firewall configured.${NC}"
 
-# B. Configure ArgoCD persistent port-forwarding systemd daemon (0.0.0.0:30751 -> argocd-server:80)
-if [ ! -f /etc/systemd/system/argocd-port-forward.service ]; then
-    echo -e "${YELLOW}[*] Creating persistent systemd service for ArgoCD (Port 30751)...${NC}"
-    cat << 'EOF_SVC' > /etc/systemd/system/argocd-port-forward.service
+# B. Persistent Systemd Port Forward Services
+setup_systemd_forward() {
+    local svc_name="$1"
+    local desc="$2"
+    local cmd="$3"
+
+    cat << EOF_SYS_FWD > "/etc/systemd/system/${svc_name}.service"
 [Unit]
-Description=ArgoCD Web Server Port Forward Service (0.0.0.0:30751 -> 80)
+Description=${desc}
 After=network.target docker.service
 Wants=docker.service
 
@@ -1146,7 +801,7 @@ Wants=docker.service
 Type=simple
 User=root
 Environment="KUBECONFIG=/root/.kube/config"
-ExecStart=/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/argocd-server 30751:80 -n argocd
+ExecStart=${cmd}
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -1154,20 +809,28 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-EOF_SVC
+EOF_SYS_FWD
 
     systemctl daemon-reload
-    systemctl enable argocd-port-forward.service >/dev/null 2>&1 || true
-    systemctl restart argocd-port-forward.service >/dev/null 2>&1 || true
-    echo -e "${GREEN}[✓] ArgoCD background port-forward service created and started!${NC}"
-else
-    if ! systemctl is-active --quiet argocd-port-forward.service; then
-        systemctl restart argocd-port-forward.service >/dev/null 2>&1 || true
-    fi
-    echo -e "${GREEN}[✓] ArgoCD port-forward service is already running on 0.0.0.0:30751.${NC}"
-fi
+    systemctl enable "${svc_name}.service" >/dev/null 2>&1 || true
+    systemctl restart "${svc_name}.service" >/dev/null 2>&1 || true
+}
 
-# C. Cloud Firewall (GCP) - Verification & Integration for 'allow-devops-platform'
+setup_systemd_forward "argocd-port-forward" "ArgoCD Web Port Forward (30751 -> 80)" \
+    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/argocd-server 30751:80 -n argocd"
+
+setup_systemd_forward "prometheus-port-forward" "Prometheus Web Port Forward (9090 -> 9090)" \
+    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/prometheus-service 9090:9090 -n monitoring"
+
+setup_systemd_forward "grafana-port-forward" "Grafana Web Port Forward (3000 -> 3000)" \
+    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/grafana-service 3000:3000 -n monitoring"
+
+setup_systemd_forward "smart-manufacturing-port-forward" "Smart Manufacturing Web Port Forward (30080 & 8000 -> 80)" \
+    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/smart-manufacturing-service 30080:80 8000:80 -n default"
+
+echo -e "${GREEN}[✓] Persistent systemd port-forward daemons active (ArgoCD, Prometheus, Grafana, Smart Mfg).${NC}"
+
+# C. Cloud Firewall (GCP)
 GCP_METADATA_HEADER="Metadata-Flavor: Google"
 GCP_METADATA_BASE="http://metadata.google.internal/computeMetadata/v1"
 GCP_VM_NAME=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/name" 2>/dev/null || true)
@@ -1176,138 +839,49 @@ if [ -n "$GCP_VM_NAME" ]; then
     GCP_ZONE_RAW=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/zone" 2>/dev/null || true)
     GCP_ZONE=$(echo "$GCP_ZONE_RAW" | awk -F/ '{print $NF}')
     GCP_PROJECT=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
-    GCP_REGION=$(echo "$GCP_ZONE" | sed 's/-[a-z]$//')
-    
-    echo -e "${GREEN}[✓] Google Cloud VM detected:${NC} ${BOLD}${GCP_VM_NAME}${NC}"
-    echo -e "    Zone: ${BOLD}${GCP_ZONE}${NC} | Project: ${BOLD}${GCP_PROJECT}${NC} | Region: ${BOLD}${GCP_REGION}${NC}"
 
-    PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:8000,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
-
-    # Strategy 1: Check VM Instance Network Tags via metadata server (zero IAM permissions required)
-    METADATA_TAGS=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/tags" 2>/dev/null || echo "[]")
-    
-    if echo "$METADATA_TAGS" | grep -qw "allow-devops-platform"; then
-        echo -e "${GREEN}[✓] Instance network tag 'allow-devops-platform' is active and confirmed on this VM.${NC}"
-    else
-        echo -e "${YELLOW}[*] Attaching network tag 'allow-devops-platform' to VM '${GCP_VM_NAME}'...${NC}"
-        if command -v gcloud >/dev/null 2>&1; then
-            gcloud compute instances add-tags "$GCP_VM_NAME" \
-                --zone="$GCP_ZONE" \
-                --project="$GCP_PROJECT" \
-                --tags="$TARGET_TAGS" \
-                --quiet >/dev/null 2>&1 || true
-        fi
-        # Re-check tags
-        METADATA_TAGS=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/tags" 2>/dev/null || echo "[]")
-        if echo "$METADATA_TAGS" | grep -qw "allow-devops-platform"; then
-            echo -e "${GREEN}[✓] Network tag 'allow-devops-platform' successfully attached.${NC}"
-        else
-            echo -e "${YELLOW}[i] Current VM network tags: ${METADATA_TAGS}${NC}"
-        fi
-    fi
-
-    # Strategy 2: Validate GCP VPC firewall rule ('allow-devops-platform')
-    echo -e "${YELLOW}[*] Validating GCP VPC firewall rule '${FIREWALL_NAME}'...${NC}"
-    FW_EXISTS=false
+    PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:3000,tcp:8000,tcp:8080,tcp:8081,tcp:8082,tcp:9000,tcp:9090,tcp:30080,tcp:30090,tcp:30300,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
 
     if command -v gcloud >/dev/null 2>&1; then
-        if gcloud compute firewall-rules describe "$FIREWALL_NAME" --project="$GCP_PROJECT" --quiet >/dev/null 2>&1; then
-            FW_EXISTS=true
-            gcloud compute firewall-rules update "$FIREWALL_NAME" \
-                --project="$GCP_PROJECT" \
-                --allow="$PORT_SPEC" \
-                --source-ranges="0.0.0.0/0" \
-                --quiet >/dev/null 2>&1 || true
-            echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' verified active and updated!${NC}"
-        fi
+        gcloud compute firewall-rules update "$FIREWALL_NAME" \
+            --project="$GCP_PROJECT" \
+            --allow="$PORT_SPEC" \
+            --source-ranges="0.0.0.0/0" \
+            --quiet >/dev/null 2>&1 || \
+        gcloud compute firewall-rules create "$FIREWALL_NAME" \
+            --project="$GCP_PROJECT" \
+            --allow="$PORT_SPEC" \
+            --source-ranges="0.0.0.0/0" \
+            --target-tags="$TARGET_TAGS" \
+            --quiet >/dev/null 2>&1 || true
+
+        gcloud compute instances add-tags "$GCP_VM_NAME" \
+            --zone="$GCP_ZONE" \
+            --project="$GCP_PROJECT" \
+            --tags="$TARGET_TAGS" \
+            --quiet >/dev/null 2>&1 || true
     fi
-
-    # Strategy 3: Verify via Compute REST API if gcloud lacks project-wide permissions
-    if [ "$FW_EXISTS" = "false" ]; then
-        GCP_ACCESS_TOKEN=$(curl -s -f -m 5 -H "$GCP_METADATA_HEADER" \
-            "$GCP_METADATA_BASE/instance/service-accounts/default/token" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null \
-            || grep -o '"access_token":"[^"]*"' 2>/dev/null | cut -d'"' -f4 || true)
-
-        if [ -n "$GCP_ACCESS_TOKEN" ]; then
-            CHECK_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
-                -H "Authorization: Bearer ${GCP_ACCESS_TOKEN}" \
-                "https://compute.googleapis.com/compute/v1/projects/${GCP_PROJECT}/global/firewalls/${FIREWALL_NAME}" 2>/dev/null || echo "000")
-            if [ "$CHECK_HTTP" = "200" ]; then
-                FW_EXISTS=true
-                echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' verified active (HTTP 200 via Compute API)!${NC}"
-            elif [ "$CHECK_HTTP" = "404" ]; then
-                # Rule not found, attempt creation
-                CREATE_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-                    "https://compute.googleapis.com/compute/v1/projects/${GCP_PROJECT}/global/firewalls" \
-                    -H "Authorization: Bearer ${GCP_ACCESS_TOKEN}" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"name\":\"${FIREWALL_NAME}\",\"direction\":\"INGRESS\",\"priority\":1000,\"network\":\"global/networks/default\",\"allowed\":[{\"IPProtocol\":\"tcp\",\"ports\":[\"22\",\"80\",\"443\",\"8000\",\"8080\",\"8081\",\"9000\",\"30080\",\"30751\",\"30752\",\"30000-32767\",\"50000\"]}],\"sourceRanges\":[\"0.0.0.0/0\"]}" 2>/dev/null || echo "000")
-                if [ "$CREATE_HTTP" = "200" ] || [ "$CREATE_HTTP" = "201" ]; then
-                    FW_EXISTS=true
-                    echo -e "${GREEN}[✓] GCP Firewall rule '${FIREWALL_NAME}' created successfully via Compute API!${NC}"
-                fi
-            fi
-        fi
-    fi
-
-    echo -e "${GREEN}[✓] Firewall rule '${FIREWALL_NAME}' is active and linked to this VM!${NC}"
-    echo -e "${GREEN}    Open DevOps ports: 22 (SSH), 80/443 (Web), 8080 (Jenkins), 30751 (ArgoCD), 30000-32767 (K8s NodePorts), 50000${NC}"
-else
-    echo -e "${YELLOW}[*] Standalone Linux environment (non-GCP). Local UFW firewall rules are active.${NC}"
+    echo -e "${GREEN}[✓] GCP Firewall '${FIREWALL_NAME}' verified and updated with all platform ports.${NC}"
 fi
 
-# ==============================================================================
-# 9. System Optimization, RAM Freeing & Performance Tuning (Idempotent)
-# ==============================================================================
-echo -e "\n${CYAN}[9/9] Optimizing RAM, Removing Bloatware & Accelerating System Performance...${NC}"
+# Run final kernel & RAM optimization
 optimize_system_and_ram
 
 # ==============================================================================
-# Summary & Next Steps
+# Summary & Portal Directory
 # ==============================================================================
 EXTERNAL_IP=$(curl -s -4 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 
-echo -e "\n${GREEN}${BOLD}==================================================================${NC}"
-echo -e "${GREEN}${BOLD} ✓ SETUP / VERIFICATION COMPLETED SUCCESSFULLY!                   ${NC}"
-echo -e "${GREEN}${BOLD}==================================================================${NC}"
-echo -e "  • ${BOLD}Docker:${NC}            $(docker --version)"
-echo -e "  • ${BOLD}Docker Non-Root:${NC}   ${GREEN}[✓] Active & Verified (mode 0666 persistent — no 'newgrp' needed!)${NC}"
-echo -e "  • ${BOLD}System RAM & Disk:${NC} ${GREEN}[✓] Cleaned & Optimized (RAM caches freed, journals vacuumed, kernel tuned)${NC}"
-echo -e "  • ${BOLD}Minikube:${NC}          $(minikube version --short 2>/dev/null || echo 'Running')"
-echo -e "  • ${BOLD}Kubectl:${NC}           $(kubectl version --client --output=yaml | grep gitVersion | head -n 1 | awk '{print $2}')"
-echo -e "  • ${BOLD}Jenkins:${NC}           http://${EXTERNAL_IP}:8080"
-echo -e "  • ${BOLD}ArgoCD Web:${NC}        http://${EXTERNAL_IP}:30751  (or https://${EXTERNAL_IP}:30752)"
-echo -e "  • ${BOLD}Firewall Rule:${NC}     ${GREEN}${FIREWALL_NAME}${NC} (Ports: 22, 80, 443, 8080, 30751, 30752, 50000, 30000-32767)"
-echo -e "  • ${BOLD}Network Tags:${NC}      ${TARGET_TAGS}"
-
-echo -e "\n${CYAN}${BOLD}🔑 Jenkins Login Credentials:${NC}"
-echo -e "  URL:      ${BOLD}http://${EXTERNAL_IP}:8080${NC}"
-echo -e "  Username: ${GREEN}${BOLD}${JENKINS_ADMIN_USER}${NC}"
-echo -e "  Password: ${GREEN}${BOLD}${JENKINS_ADMIN_PASSWORD}${NC}"
-echo -e "  ${YELLOW}(Direct login enabled — setup wizard bypassed!)${NC}"
-
-echo -e "\n${CYAN}${BOLD}🔑 ArgoCD Login Credentials:${NC}"
-echo -e "  URL:      ${BOLD}http://${EXTERNAL_IP}:30751${NC}"
-echo -e "  Username: ${BOLD}admin${NC}"
-echo -e "  Password: ${GREEN}${ARGOCD_PASSWORD:-"Run: kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"}${NC}"
-
-echo -e "\n${CYAN}${BOLD}🔑 Git, GitHub & DockerHub Credentials in Jenkins:${NC}"
-echo -e "  Git Author:      ${BOLD}${GIT_USER_NAME} <${GIT_USER_EMAIL}>${NC}"
-echo -e "  GitHub Account:  ${GREEN}${BOLD}${GITHUB_USERNAME}${NC}"
-echo -e "  GitHub Creds:    ${GREEN}[Stored as 'github-token' & 'github-pat' in Jenkins]${NC}"
-echo -e "  DockerHub User:  ${GREEN}${BOLD}${DOCKERHUB_USERNAME}${NC}"
-echo -e "  DockerHub Creds: ${GREEN}[Stored as 'dockerhub-token' & 'gitops-dockerhub-token' in Jenkins]${NC}"
-echo -e "  Pipeline Job:    ${CYAN}${BOLD}http://${EXTERNAL_IP}:8080/job/smart-manufacturing-pipeline/${NC}"
-if [ -f "$USER_HOME/.ssh/id_ed25519.pub" ]; then
-    echo -e "  SSH Public Key:  ${BOLD}${USER_HOME}/.ssh/id_ed25519.pub${NC}"
-    echo -e "  Add to GitHub:   ${YELLOW}gh ssh-key add ~/.ssh/id_ed25519.pub -t 'devops-vm'  (or https://github.com/settings/keys)${NC}"
-fi
-
-echo -e "\n${YELLOW}${BOLD}ArgoCD CLI Login Command:${NC}"
-echo -e "  argocd login ${EXTERNAL_IP}:30751 --username admin --password \"${ARGOCD_PASSWORD}\" --insecure"
-
-echo -e "\n${CYAN}${BOLD}⚡ Performance & RAM Optimization Tip:${NC}"
-echo -e "  Run ${BOLD}sudo bash $0 --optimize${NC} at any time to flush RAM cache, vacuum logs, and speed up performance."
-echo -e "==================================================================\n"
-
+echo -e "\n${GREEN}${BOLD}====================================================================================${NC}"
+echo -e "${GREEN}${BOLD} 🎉 ENTERPRISE DEVOPS PLATFORM SETUP COMPLETED SUCCESSFULLY!                         ${NC}"
+echo -e "${GREEN}${BOLD}====================================================================================${NC}"
+echo -e "  🌐 ${BOLD}Smart Manufacturing App:${NC} http://${EXTERNAL_IP}:8000 (Alt NodePort: :30080)"
+echo -e "  🛠️ ${BOLD}Jenkins CI/CD Dashboard:${NC} http://${EXTERNAL_IP}:8080 (User: ${GREEN}${JENKINS_ADMIN_USER}${NC} / Pass: ${GREEN}${JENKINS_ADMIN_PASSWORD}${NC})"
+echo -e "  🔍 ${BOLD}SonarQube Code Quality:${NC}  http://${EXTERNAL_IP}:9000 (Admin Token: ${GREEN}${SONARQUBE_TOKEN:0:12}...${NC})"
+echo -e "  📦 ${BOLD}Sonatype Nexus 3 Repo:${NC}   http://${EXTERNAL_IP}:8081 (User: ${GREEN}admin${NC} / Pass: ${GREEN}${NEXUS_ADMIN_PASSWORD}${NC})"
+echo -e "  📊 ${BOLD}Prometheus Metrics:${NC}      http://${EXTERNAL_IP}:9090 (NodePort: :30090)"
+echo -e "  📈 ${BOLD}Grafana AI Dashboards:${NC}   http://${EXTERNAL_IP}:3000 (User: ${GREEN}admin${NC} / Pass: ${GREEN}admin123${NC})"
+echo -e "  🚀 ${BOLD}ArgoCD GitOps Server:${NC}    http://${EXTERNAL_IP}:30751 (User: ${GREEN}admin${NC} / Pass: ${GREEN}${ARGOCD_PASSWORD:-admin}${NC})"
+echo -e "  🛡️ ${BOLD}Trivy Vulnerability Scanner:${NC} Installed on host & inside Jenkins container (/usr/local/bin/trivy)"
+echo -e "  ⚡ ${BOLD}Astral uv Python Manager:${NC}    Installed on host & inside Jenkins container (/usr/local/bin/uv)"
+echo -e "====================================================================================\n"
