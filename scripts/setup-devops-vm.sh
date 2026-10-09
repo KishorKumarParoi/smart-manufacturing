@@ -47,9 +47,17 @@ if [ -f /etc/os-release ]; then
     OS_CODENAME="${VERSION_CODENAME:-}"
 fi
 
-# Standardize Docker upstream distro mapping
-DOCKER_DISTRO="ubuntu"
-if [ "$OS_ID" = "debian" ] || [ "${ID_LIKE:-}" = "debian" ] || echo "${ID_LIKE:-}" | grep -qw "debian"; then
+# Standardize Docker upstream distro mapping (prioritize ID=ubuntu over ID_LIKE=debian)
+if [ "$OS_ID" = "ubuntu" ]; then
+    DOCKER_DISTRO="ubuntu"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
+elif [ "$OS_ID" = "debian" ]; then
+    DOCKER_DISTRO="debian"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
+elif echo "${ID_LIKE:-}" | grep -qw "ubuntu"; then
+    DOCKER_DISTRO="ubuntu"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
+elif echo "${ID_LIKE:-}" | grep -qw "debian"; then
     DOCKER_DISTRO="debian"
     [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
 else

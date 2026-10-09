@@ -84,9 +84,17 @@ if [ -f /etc/os-release ]; then
     OS_CODENAME="${VERSION_CODENAME:-}"
 fi
 
-# Standardize Docker upstream distro mapping
-DOCKER_DISTRO="ubuntu"
-if [ "$OS_ID" = "debian" ] || [ "${ID_LIKE:-}" = "debian" ] || echo "${ID_LIKE:-}" | grep -qw "debian"; then
+# Standardize Docker upstream distro mapping (prioritize ID=ubuntu over ID_LIKE=debian)
+if [ "$OS_ID" = "ubuntu" ]; then
+    DOCKER_DISTRO="ubuntu"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
+elif [ "$OS_ID" = "debian" ]; then
+    DOCKER_DISTRO="debian"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
+elif echo "${ID_LIKE:-}" | grep -qw "ubuntu"; then
+    DOCKER_DISTRO="ubuntu"
+    [ -z "$OS_CODENAME" ] && OS_CODENAME="jammy"
+elif echo "${ID_LIKE:-}" | grep -qw "debian"; then
     DOCKER_DISTRO="debian"
     [ -z "$OS_CODENAME" ] && OS_CODENAME="bookworm"
 else
@@ -299,6 +307,9 @@ echo -e "\n${CYAN}[1/9] Checking base utilities (${DOCKER_DISTRO} ${OS_CODENAME}
 
 # Core packages guaranteed across Debian (including Trixie) and Ubuntu LTS releases
 REQUIRED_PKGS=(ca-certificates curl gnupg lsb-release wget conntrack git jq ufw acl procps)
+if [ "$DOCKER_DISTRO" = "ubuntu" ]; then
+    REQUIRED_PKGS+=(software-properties-common)
+fi
 MISSING_PKGS=()
 
 for pkg in "${REQUIRED_PKGS[@]}"; do
@@ -331,6 +342,7 @@ if command -v docker >/dev/null 2>&1 && systemctl is-active --quiet docker; then
     echo -e "${GREEN}[✓] Docker is already installed and running: ${NC}$(docker --version)"
 else
     echo -e "${YELLOW}[*] Installing Docker CE and Docker Compose plugin for ${BOLD}${DOCKER_DISTRO} (${OS_CODENAME})${NC}...${NC}"
+    rm -f /etc/apt/sources.list.d/docker*.list
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL "https://download.docker.com/linux/${DOCKER_DISTRO}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
     chmod a+r /etc/apt/keyrings/docker.gpg
