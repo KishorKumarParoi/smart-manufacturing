@@ -18,9 +18,8 @@ pipeline {
         WEB_PORT                  = "30080"
         ARGOCD_PORT               = "30751"
         JENKINS_PORT              = "8080"
-        // UV settings — fast non-interactive package operations
+        // UV settings — fast non-interactive operations
         UV_NO_PROGRESS            = "1"
-        UV_SYSTEM_PYTHON          = "1"
     }
 
     stages {
@@ -67,12 +66,13 @@ pipeline {
                     UV_BIN=$(command -v uv || echo "uv")
                     echo "[✓] uv version: $($UV_BIN --version)"
 
-                    echo "[*] Initializing isolated virtual environment with Python 3.11..."
-                    $UV_BIN venv .venv --python 3.11 2>/dev/null || $UV_BIN venv .venv
+                    echo "[*] Initializing isolated virtual environment (.venv) with Python 3.11..."
+                    rm -rf .venv
+                    $UV_BIN venv .venv --python 3.11
 
-                    echo "[*] Installing dependencies with uv..."
-                    $UV_BIN pip install -r requirements.txt pytest pytest-cov flake8 black mypy
-                    echo "[✓] Dependencies installed successfully"
+                    echo "[*] Installing dependencies with uv into .venv..."
+                    $UV_BIN pip install --python .venv -r requirements.txt pytest pytest-cov flake8 black mypy
+                    echo "[✓] Dependencies installed successfully in .venv"
                 '''
             }
         }
@@ -83,14 +83,11 @@ pipeline {
         stage('Lint & Code Quality') {
             steps {
                 sh '''
-                    export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-                    UV_BIN=$(command -v uv || echo "uv")
-
                     echo "[*] Running Black format check..."
-                    $UV_BIN run black --check --diff src/ tests/ main.py || true
+                    .venv/bin/black --check --diff src/ tests/ main.py || true
 
                     echo "[*] Running Flake8 static analysis..."
-                    $UV_BIN run flake8 src/ tests/ main.py \
+                    .venv/bin/flake8 src/ tests/ main.py \
                         --max-line-length=120 \
                         --ignore=E501,W503,E203,E402,F401,F541 \
                         --exclude=.venv,__pycache__
@@ -106,11 +103,8 @@ pipeline {
         stage('Unit & Model Tests') {
             steps {
                 sh '''
-                    export PATH="/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-                    UV_BIN=$(command -v uv || echo "uv")
-
                     echo "[*] Running pytest suite..."
-                    $UV_BIN run pytest tests/ \
+                    .venv/bin/pytest tests/ \
                         -v \
                         --tb=short \
                         --cov=src \
