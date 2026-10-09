@@ -1,10 +1,44 @@
 import os
+import time
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 import joblib
 import pandas as pd
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
 
 app = Flask(__name__, template_folder="src/templates", static_folder="src/static")
+
+# Prometheus Metrics Collectors
+REQUEST_COUNT = Counter(
+    "smart_mfg_http_requests_total",
+    "Total HTTP requests handled",
+    ["endpoint", "status"],
+)
+INFERENCE_COUNT = Counter(
+    "smart_mfg_inference_total",
+    "Total AI inference predictions",
+    ["prediction_class"],
+)
+INFERENCE_LATENCY = Histogram(
+    "smart_mfg_inference_latency_seconds",
+    "Inference execution latency in seconds",
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5],
+)
+MODEL_LOADED_GAUGE = Gauge(
+    "smart_mfg_model_loaded_status",
+    "Model loaded status (1=loaded, 0=not loaded)",
+)
+CONFIDENCE_GAUGE = Gauge(
+    "smart_mfg_last_prediction_confidence",
+    "Confidence score of the most recent inference prediction",
+    ["prediction_class"],
+)
 
 MODEL_PATH = "artifacts/models/model.pkl"
 SCALER_PATH = "artifacts/models/scaler.pkl"
@@ -399,8 +433,14 @@ def predict_efficiency(form_data):
     df_input = pd.DataFrame([row], columns=FEATURES)
     scaled_array = scl.transform(df_input)
 
+    start_time = time.time()
     pred_idx = int(clf.predict(scaled_array)[0])
     label_name = LABELS.get(pred_idx, "Unknown")
+
+    # Record inference metrics
+    duration = time.time() - start_time
+    INFERENCE_LATENCY.observe(duration)
+    INFERENCE_COUNT.labels(prediction_class=label_name).inc()
 
     # Probabilities
     probs = (
@@ -414,6 +454,7 @@ def predict_efficiency(form_data):
         "Medium": round(float(probs[2]) * 100, 2),
     }
     confidence = prob_dict.get(label_name, 0.0)
+    CONFIDENCE_GAUGE.labels(prediction_class=label_name).set(confidence)
 
     # Diagnostic recommendation
     if label_name == "High":
@@ -497,6 +538,24 @@ def health():
         ),
         200,
     )
+
+
+@app.after_request
+def record_http_metrics(response):
+    try:
+        REQUEST_COUNT.labels(
+            endpoint=request.path, status=str(response.status_code)
+        ).inc()
+    except Exception:
+        pass
+    return response
+
+
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    clf, _ = get_artifacts()
+    MODEL_LOADED_GAUGE.set(1 if clf is not None else 0)
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":

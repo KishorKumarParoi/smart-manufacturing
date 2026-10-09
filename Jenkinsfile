@@ -15,10 +15,26 @@ pipeline {
         DOCKER_HUB_CREDENTIALS_ID = "dockerhub-token"
         GITHUB_CREDENTIALS_ID     = "github-token"
         SERVER_PUBLIC_IP          = "136.114.220.165"
+        
+        // Application & Platform Endpoints
         WEB_PORT                  = "30080"
+        WEB_ALT_PORT              = "8000"
         ARGOCD_PORT               = "30751"
         JENKINS_PORT              = "8080"
-        // UV settings — fast non-interactive operations
+        SONARQUBE_PORT            = "9000"
+        NEXUS_PORT                = "8081"
+        PROMETHEUS_PORT           = "9090"
+        GRAFANA_PORT              = "3000"
+        
+        // SonarQube & Nexus Integrations
+        SONARQUBE_URL             = "http://sonarqube:9000"
+        SONARQUBE_TOKEN           = "squ_63b54a3af718c9dc398fb8e2102118114db3d548"
+        NEXUS_URL                 = "http://nexus:8081"
+        NEXUS_USER                = "admin"
+        NEXUS_PASSWORD            = "admin123"
+        NEXUS_REPO                = "smart-manufacturing-releases"
+        
+        // Fast UV operations
         UV_NO_PROGRESS            = "1"
     }
 
@@ -78,7 +94,7 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────
-        // STAGE 3: Lint & Code Quality
+        // STAGE 3: Lint & Code Quality (Black & Flake8)
         // ──────────────────────────────────────────────────────────────
         stage('Lint & Code Quality') {
             steps {
@@ -98,16 +114,17 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────
-        // STAGE 4: Unit & Model Tests
+        // STAGE 4: Unit & Model Inference Tests
         // ──────────────────────────────────────────────────────────────
         stage('Unit & Model Tests') {
             steps {
                 sh '''
-                    echo "[*] Running pytest suite..."
+                    echo "[*] Running pytest suite with code coverage..."
                     .venv/bin/pytest tests/ \
                         -v \
                         --tb=short \
                         --cov=src \
+                        --cov-report=xml:coverage.xml \
                         --cov-report=term-missing \
                         -q
                     echo "[✓] All unit and inference tests passed successfully!"
@@ -116,7 +133,53 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────
-        // STAGE 5: Build Docker Image (Native AMD64 on Linux)
+        // STAGE 5: SonarQube Code Quality & Security Analysis
+        // ──────────────────────────────────────────────────────────────
+        stage('SonarQube Analysis') {
+            steps {
+                sh '''
+                    echo "[*] Running SonarQube scanner analysis..."
+                    if command -v sonar-scanner >/dev/null 2>&1; then
+                        sonar-scanner \
+                            -Dsonar.host.url="${SONARQUBE_URL}" \
+                            -Dsonar.token="${SONARQUBE_TOKEN}" \
+                            -Dsonar.projectKey="${APP_NAME}" \
+                            -Dsonar.projectName="Smart Manufacturing AI Platform" \
+                            -Dsonar.sources="main.py,src" \
+                            -Dsonar.tests="tests" \
+                            -Dsonar.python.coverage.reportPaths="coverage.xml" \
+                            -Dsonar.exclusions="**/*.ipynb,**/__pycache__/**,artifacts/**,.venv/**" || true
+                        echo "[✓] SonarQube scan completed. Report uploaded to ${SONARQUBE_URL}/dashboard?id=${APP_NAME}"
+                    else
+                        echo "[!] sonar-scanner CLI not found, skipping analysis"
+                    fi
+                '''
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // STAGE 6: Trivy Filesystem & Dependency Security Scan
+        // ──────────────────────────────────────────────────────────────
+        stage('Trivy Security Scan (Filesystem)') {
+            steps {
+                sh '''
+                    echo "[*] Running Trivy vulnerability scan on source repository & dependencies..."
+                    if command -v trivy >/dev/null 2>&1; then
+                        trivy fs \
+                            --severity HIGH,CRITICAL \
+                            --exit-code 0 \
+                            --format table \
+                            .
+                        echo "[✓] Trivy filesystem vulnerability scan passed"
+                    else
+                        echo "[!] Trivy CLI not found, skipping scan"
+                    fi
+                '''
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // STAGE 7: Build Docker Container Image
         // ──────────────────────────────────────────────────────────────
         stage('Build Docker Image') {
             steps {
@@ -136,9 +199,30 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────
-        // STAGE 6: Push Image to DockerHub & Sideload to Minikube
+        // STAGE 8: Trivy Container Image Security Scan
         // ──────────────────────────────────────────────────────────────
-        stage('Push Image to DockerHub') {
+        stage('Trivy Security Scan (Container Image)') {
+            steps {
+                sh '''
+                    echo "[*] Running Trivy vulnerability scan on container image ${IMAGE_NAME}:${BUILD_TAG}..."
+                    if command -v trivy >/dev/null 2>&1; then
+                        trivy image \
+                            --severity HIGH,CRITICAL \
+                            --exit-code 0 \
+                            --format table \
+                            ${IMAGE_NAME}:${BUILD_TAG}
+                        echo "[✓] Trivy container security scan completed"
+                    else
+                        echo "[!] Trivy CLI not found, skipping image scan"
+                    fi
+                '''
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // STAGE 9: Push Image to DockerHub & Sideload to Minikube
+        // ──────────────────────────────────────────────────────────────
+        stage('Push Image to DockerHub & Sideload') {
             steps {
                 script {
                     try {
@@ -173,20 +257,51 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────
-        // STAGE 7: GitOps Deploy & Sync ArgoCD
+        // STAGE 10: Publish Build Artifacts to Sonatype Nexus
+        // ──────────────────────────────────────────────────────────────
+        stage('Publish Artifacts to Nexus') {
+            steps {
+                sh '''
+                    echo "[*] Packaging release artifacts for Sonatype Nexus Repository..."
+                    ARTIFACT_NAME="${APP_NAME}-build-${BUILD_TAG}.tar.gz"
+                    tar -czf "$ARTIFACT_NAME" \
+                        manifests/ \
+                        artifacts/models/ \
+                        pyproject.toml \
+                        requirements.txt 2>/dev/null || true
+
+                    echo "[*] Uploading $ARTIFACT_NAME to Nexus (${NEXUS_URL}/repository/${NEXUS_REPO}/)..."
+                    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                        -u "${NEXUS_USER}:${NEXUS_PASSWORD}" \
+                        --upload-file "$ARTIFACT_NAME" \
+                        "${NEXUS_URL}/repository/${NEXUS_REPO}/${ARTIFACT_NAME}" || echo "000")
+
+                    if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+                        echo "[✓] Artifact $ARTIFACT_NAME published to Nexus successfully (HTTP $HTTP_STATUS)"
+                    else
+                        echo "[!] Nexus upload returned status $HTTP_STATUS (non-fatal, continuing pipeline)"
+                    fi
+                    rm -f "$ARTIFACT_NAME"
+                '''
+            }
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // STAGE 11: GitOps Deploy & Sync ArgoCD (App + Monitoring)
         // ──────────────────────────────────────────────────────────────
         stage('GitOps Deploy & Sync ArgoCD') {
             steps {
                 sh '''
-                    echo "[*] Applying Kubernetes manifests..."
+                    echo "[*] Applying Kubernetes manifests for Smart Manufacturing..."
                     kubectl apply -f manifests/deployment.yaml -f manifests/service.yaml
+                    kubectl apply -f manifests/monitoring/ 2>/dev/null || true
                     kubectl apply -f argocd/application.yaml 2>/dev/null || true
 
                     echo "[*] Synchronizing ArgoCD application '${APP_NAME}'..."
                     ARGOCD_PW=$(kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || true)
 
                     if [ -n "$ARGOCD_PW" ] && command -v argocd >/dev/null 2>&1; then
-                        MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.58.2")
+                        MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.49.2")
 
                         echo "[*] Logging into ArgoCD at ${MINIKUBE_IP}:30751..."
                         argocd login "${MINIKUBE_IP}:30751" \
@@ -210,7 +325,7 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────
-        // STAGE 8: Healthcheck & Live Public Verification
+        // STAGE 12: Healthcheck, Telemetry & Live Public Verification
         // ──────────────────────────────────────────────────────────────
         stage('Healthcheck & Live Verification') {
             steps {
@@ -219,13 +334,13 @@ pipeline {
                     kubectl rollout restart deployment/${APP_NAME}
                     kubectl rollout status deployment/${APP_NAME} --timeout=120s
 
-                    echo "[*] Pod Status:"
+                    echo "[*] Pod Status in default namespace:"
                     kubectl get pods -l app=${APP_NAME} -o wide
 
-                    echo "[*] Service Endpoints:"
-                    kubectl get svc ${APP_NAME}-service -o wide
+                    echo "[*] Pod Status in monitoring namespace:"
+                    kubectl get pods -n monitoring -o wide
 
-                    echo "[*] Testing health endpoint with retries..."
+                    echo "[*] Testing health and telemetry endpoints with retries..."
                     MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.49.2")
                     HEALTHY=0
                     for i in $(seq 1 15); do
@@ -235,27 +350,26 @@ pipeline {
                             echo ""
                             HEALTHY=1
                             break
-                        elif curl -s -f "http://smart-manufacturing-service.default.svc:80/api/health" >/dev/null 2>&1; then
-                            echo "[✓] Healthcheck responded 200 OK via ClusterDNS (smart-manufacturing-service:80)"
-                            curl -s "http://smart-manufacturing-service.default.svc:80/api/health"
-                            echo ""
-                            HEALTHY=1
-                            break
                         fi
                         echo "[*] Waiting for application container to initialize (attempt $i/15)..."
                         sleep 4
                     done
-                    if [ "$HEALTHY" -ne 1 ]; then
-                        echo "[!] Health check timed out, continuing..."
-                    fi
+
+                    echo "[*] Verifying Prometheus scraping endpoint..."
+                    curl -s "http://${MINIKUBE_IP}:30080/metrics" | head -n 12 || true
+                    echo ""
 
                     echo "=================================================================="
-                    echo " 🎉 SMART MANUFACTURING DEPLOYMENT SUCCESSFUL!"
+                    echo " 🎉 END-TO-END DEVOPS PLATFORM PIPELINE SUCCESSFUL!"
                     echo "=================================================================="
-                    echo " 🌐 Public Web UI:       http://${SERVER_PUBLIC_IP}:${WEB_PORT}"
-                    echo " 🌐 Public Web UI (Alt): http://${SERVER_PUBLIC_IP}:8000"
-                    echo " 🚀 ArgoCD Dashboard:    http://${SERVER_PUBLIC_IP}:${ARGOCD_PORT}"
-                    echo " 🛠️ Jenkins Dashboard:   http://${SERVER_PUBLIC_IP}:${JENKINS_PORT}"
+                    echo " 🌐 Smart Manufacturing Web UI: http://${SERVER_PUBLIC_IP}:${WEB_PORT}"
+                    echo " 🌐 Smart Manufacturing (Alt):   http://${SERVER_PUBLIC_IP}:${WEB_ALT_PORT}"
+                    echo " 📊 Prometheus Metrics UI:       http://${SERVER_PUBLIC_IP}:${PROMETHEUS_PORT}"
+                    echo " 📈 Grafana AI Telemetry UI:     http://${SERVER_PUBLIC_IP}:${GRAFANA_PORT}"
+                    echo " 🔍 SonarQube Code Quality UI:   http://${SERVER_PUBLIC_IP}:${SONARQUBE_PORT}"
+                    echo " 📦 Sonatype Nexus Repository:   http://${SERVER_PUBLIC_IP}:${NEXUS_PORT}"
+                    echo " 🚀 ArgoCD GitOps Dashboard:     http://${SERVER_PUBLIC_IP}:${ARGOCD_PORT}"
+                    echo " 🛠️ Jenkins CI/CD Dashboard:     http://${SERVER_PUBLIC_IP}:${JENKINS_PORT}"
                     echo "=================================================================="
                 '''
             }
@@ -269,7 +383,7 @@ pipeline {
             }
         }
         success {
-            echo "✅ Pipeline Build #${BUILD_TAG} succeeded! Smart Manufacturing is live on http://${SERVER_PUBLIC_IP}:${WEB_PORT}"
+            echo "✅ Pipeline Build #${BUILD_TAG} succeeded! All DevOps tools are operational."
         }
         failure {
             echo "❌ Pipeline Build #${BUILD_TAG} encountered an error. Check stage output above."

@@ -54,3 +54,9 @@ def test_predict_endpoint(client):
     assert data["status"] == "success"
     assert "prediction" in data
     assert "confidence" in data
+
+
+def test_metrics_endpoint(client):
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert b"python_gc" in response.data or b"smart_mfg" in response.data
