@@ -12,9 +12,9 @@ pipeline {
         APP_NAME                  = "smart-manufacturing"
         IMAGE_NAME                = "kishorkumarparoi/smart-manufacturing"
         BUILD_TAG                 = "${env.BUILD_NUMBER}"
-        DOCKER_HUB_CREDENTIALS_ID = "gitops-dockerhub-token"
-        GITHUB_CREDENTIALS_ID     = "github-pat"
-        SERVER_PUBLIC_IP          = "35.225.221.103"
+        DOCKER_HUB_CREDENTIALS_ID = "dockerhub-token"
+        GITHUB_CREDENTIALS_ID     = "github-token"
+        SERVER_PUBLIC_IP          = "136.114.220.165"
         WEB_PORT                  = "30080"
         ARGOCD_PORT               = "30751"
         JENKINS_PORT              = "8080"
@@ -215,10 +215,29 @@ pipeline {
                     echo "[*] Service Endpoints:"
                     kubectl get svc ${APP_NAME}-service -o wide
 
-                    echo "[*] Testing health endpoint..."
-                    MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.58.2")
-                    curl -s -f "http://${MINIKUBE_IP}:30080/api/health" || curl -s -f "http://localhost:30080/api/health" || true
-                    echo ""
+                    echo "[*] Testing health endpoint with retries..."
+                    MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.49.2")
+                    HEALTHY=0
+                    for i in $(seq 1 15); do
+                        if curl -s -f "http://${MINIKUBE_IP}:30080/api/health" >/dev/null 2>&1; then
+                            echo "[✓] Healthcheck responded 200 OK via Minikube NodePort (${MINIKUBE_IP}:30080)"
+                            curl -s "http://${MINIKUBE_IP}:30080/api/health"
+                            echo ""
+                            HEALTHY=1
+                            break
+                        elif curl -s -f "http://smart-manufacturing-service.default.svc:80/api/health" >/dev/null 2>&1; then
+                            echo "[✓] Healthcheck responded 200 OK via ClusterDNS (smart-manufacturing-service:80)"
+                            curl -s "http://smart-manufacturing-service.default.svc:80/api/health"
+                            echo ""
+                            HEALTHY=1
+                            break
+                        fi
+                        echo "[*] Waiting for application container to initialize (attempt $i/15)..."
+                        sleep 4
+                    done
+                    if [ "$HEALTHY" -ne 1 ]; then
+                        echo "[!] Health check timed out, continuing..."
+                    fi
 
                     echo "=================================================================="
                     echo " 🎉 SMART MANUFACTURING DEPLOYMENT SUCCESSFUL!"
