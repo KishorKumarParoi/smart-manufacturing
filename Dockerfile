@@ -14,9 +14,8 @@ RUN pip install --no-cache-dir uv
 # Copy dependency files first (Docker layer cache)
 COPY pyproject.toml requirements.txt* ./
 
-# Install all project dependencies from pyproject.toml via uv
-RUN uv pip install --system --no-cache -r pyproject.toml 2>/dev/null \
-    || pip install --no-cache-dir -r requirements.txt
+# Install all project dependencies from requirements.txt via uv
+RUN uv pip install --system --no-cache -r requirements.txt
 
 # Copy full application source including pre-trained model artifacts
 COPY . /app
