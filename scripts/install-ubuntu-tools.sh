@@ -186,6 +186,8 @@ fs.inotify.max_user_instances = 8192
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 8192
 net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-iptables = 1
 EOF_SYSCTL
 
     sysctl --system >/dev/null 2>&1 || true
@@ -358,6 +360,9 @@ else
     systemctl start docker
     echo -e "${GREEN}[✓] Docker installed successfully: ${NC}$(docker --version)"
 fi
+
+# Ensure kernel IP forwarding is active for Docker container ingress
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 
 # Ensure user is in docker group
 if ! id -nG "$REAL_USER" | grep -qw docker; then

@@ -149,6 +149,7 @@ echo \
 sudo apt-get update -y
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo usermod -aG docker "$REAL_USER"
+sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 
 # Configure permanent non-root Docker socket permissions (mode 0666 - NO 'newgrp docker' required)
 sudo mkdir -p /etc/systemd/system/docker.socket.d
