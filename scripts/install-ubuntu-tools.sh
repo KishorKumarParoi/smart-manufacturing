@@ -27,17 +27,19 @@ EOF
 
 header
 
-if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+show_help() {
     echo "Usage: sudo bash $0 [OPTIONS]"
     echo "Options:"
-    echo "  (no args)        Run full DevOps platform installation & optimization"
-    echo "  --optimize       Clear RAM caches, vacuum logs, remove bloatware, and tune kernel"
-    echo "  --cleanup        Alias for --optimize"
-    echo "  --speedup        Alias for --optimize"
-    echo "  --fix-minikube   Reset stale Minikube Docker network bridge and recover cluster"
-    echo "  --help, -h       Show this help message"
-    exit 0
-fi
+    echo "  (no args)                     Run full DevOps platform installation & verification"
+    echo "  --github-token <token>        Set GitHub Personal Access Token for Jenkins & Git"
+    echo "  --dockerhub-token <token>     Set DockerHub Access Token for Jenkins & Docker"
+    echo "  --github-user <username>      Set GitHub username (default: KishorKumarParoi)"
+    echo "  --dockerhub-user <username>   Set DockerHub username (default: kishorkumarparoi)"
+    echo "  --jenkins-password <pass>     Set Jenkins admin password (default: admin123)"
+    echo "  --optimize, --cleanup         Clear RAM caches, vacuum logs, and tune kernel"
+    echo "  --fix-minikube                Reset stale Minikube Docker network bridge"
+    echo "  --help, -h                    Show this help message"
+}
 
 # Ensure running with sudo or as root
 if [ "$EUID" -ne 0 ]; then
@@ -47,21 +49,72 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 REAL_USER="${SUDO_USER:-$USER}"
-USER_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
-
+USER_HOME=$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6 || echo "$HOME")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "${SCRIPT_DIR}/../.env" ]; then
-    # shellcheck disable=SC1091
-    source "${SCRIPT_DIR}/../.env"
-elif [ -f "${SCRIPT_DIR}/.env" ]; then
-    # shellcheck disable=SC1091
-    source "${SCRIPT_DIR}/.env"
-elif [ -f "${USER_HOME}/.devops.env" ]; then
-    # shellcheck disable=SC1091
-    source "${USER_HOME}/.devops.env"
-fi
 
-# Configuration defaults (can be overridden via environment variables or .env)
+# Discover and source all candidate environment secret files
+ENV_FILES=(
+    "/etc/devops.env"
+    "/root/.devops.env"
+    "${USER_HOME}/.devops.env"
+    "${USER_HOME}/smart_manufacturing/.env"
+    "${USER_HOME}/smart-manufacturing/.env"
+    "${PWD}/.env"
+    "${SCRIPT_DIR}/../.env"
+    "${SCRIPT_DIR}/.env"
+)
+for ef in "${ENV_FILES[@]}"; do
+    if [ -f "$ef" ]; then
+        # shellcheck disable=SC1090
+        set -a
+        source "$ef" 2>/dev/null || true
+        set +a
+    fi
+done
+
+# Parse CLI options (CLI options take priority over .env files)
+RUN_MODE="full"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --github-token|--gh-token)
+            GITHUB_TOKEN="$2"
+            shift 2
+            ;;
+        --dockerhub-token|--dh-token)
+            DOCKERHUB_TOKEN="$2"
+            shift 2
+            ;;
+        --github-username|--gh-user|--github-user)
+            GITHUB_USERNAME="$2"
+            shift 2
+            ;;
+        --dockerhub-username|--dh-user|--dockerhub-user)
+            DOCKERHUB_USERNAME="$2"
+            shift 2
+            ;;
+        --jenkins-password|--jenkins-admin-password)
+            JENKINS_ADMIN_PASSWORD="$2"
+            shift 2
+            ;;
+        --optimize|--clean|--cleanup|--speedup|-o)
+            RUN_MODE="optimize"
+            shift
+            ;;
+        --fix-minikube|--repair-minikube)
+            RUN_MODE="fix-minikube"
+            shift
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# Configuration defaults
 JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER:-admin}"
 JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD:-admin123}"
 GIT_USER_NAME="${GIT_USER_NAME:-Kishor Kumar Paroi}"
@@ -73,6 +126,49 @@ DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN:-}"
 FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
 TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
 REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
+
+# Non-blocking interactive prompt if tokens are missing and /dev/tty is available
+if [ -z "$GITHUB_TOKEN" ] && [ -c /dev/tty ]; then
+    echo -e "${YELLOW}[*] GitHub Token not detected in arguments or .env files.${NC}"
+    echo -n "    Enter GitHub Personal Access Token (or press ENTER to auto-generate placeholder): " > /dev/tty
+    read -r -t 15 user_gh_tok < /dev/tty || true
+    echo "" > /dev/tty
+    if [ -n "$user_gh_tok" ]; then
+        GITHUB_TOKEN="$user_gh_tok"
+    fi
+fi
+
+if [ -z "$DOCKERHUB_TOKEN" ] && [ -c /dev/tty ]; then
+    echo -e "${YELLOW}[*] DockerHub Token not detected in arguments or .env files.${NC}"
+    echo -n "    Enter DockerHub Personal Access Token (or press ENTER to auto-generate placeholder): " > /dev/tty
+    read -r -t 15 user_dh_tok < /dev/tty || true
+    echo "" > /dev/tty
+    if [ -n "$user_dh_tok" ]; then
+        DOCKERHUB_TOKEN="$user_dh_tok"
+    fi
+fi
+
+# Always guarantee non-empty effective tokens so Jenkins credentials store ALWAYS creates them
+GITHUB_TOKEN_EFFECTIVE="${GITHUB_TOKEN:-placeholder-github-token-update-in-jenkins}"
+DOCKERHUB_TOKEN_EFFECTIVE="${DOCKERHUB_TOKEN:-placeholder-dockerhub-token-update-in-jenkins}"
+
+# Auto-persist secrets to ~/.devops.env and /root/.devops.env for persistence across script runs
+for p_file in "/root/.devops.env" "${USER_HOME}/.devops.env"; do
+    if [ -n "$GITHUB_TOKEN" ] || [ -n "$DOCKERHUB_TOKEN" ] || [ ! -f "$p_file" ]; then
+        mkdir -p "$(dirname "$p_file")"
+        cat << EOF_PERSIST > "$p_file"
+# Smart Manufacturing DevOps Platform Secrets (Auto-persisted)
+export GITHUB_USERNAME="${GITHUB_USERNAME}"
+export GITHUB_TOKEN="${GITHUB_TOKEN}"
+export DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME}"
+export DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN}"
+export JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER}"
+export JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD}"
+EOF_PERSIST
+        chmod 600 "$p_file"
+        chown "$REAL_USER:$REAL_USER" "$p_file" 2>/dev/null || true
+    fi
+done
 
 # Detect Operating System (Ubuntu / Debian / Debian-derivatives)
 OS_ID="ubuntu"
@@ -278,22 +374,12 @@ fix_and_start_minikube() {
     fi
 }
 
-# Handle standalone execution flags
-if [[ "$1" == "--optimize" || "$1" == "--clean" || "$1" == "--cleanup" || "$1" == "--speedup" || "$1" == "-o" ]]; then
+# Handle standalone execution modes
+if [ "$RUN_MODE" = "optimize" ]; then
     optimize_system_and_ram
     exit 0
-elif [[ "$1" == "--fix-minikube" || "$1" == "--repair-minikube" ]]; then
+elif [ "$RUN_MODE" = "fix-minikube" ]; then
     fix_and_start_minikube
-    exit 0
-elif [[ "$1" == "--help" || "$1" == "-h" ]]; then
-    echo "Usage: sudo bash $0 [OPTIONS]"
-    echo "Options:"
-    echo "  (no args)        Run full DevOps platform installation & optimization"
-    echo "  --optimize       Clear RAM caches, vacuum logs, remove bloatware, and tune kernel"
-    echo "  --cleanup        Alias for --optimize"
-    echo "  --speedup        Alias for --optimize"
-    echo "  --fix-minikube   Reset stale Minikube Docker network bridge and recover cluster"
-    echo "  --help, -h       Show this help message"
     exit 0
 fi
 
@@ -301,6 +387,16 @@ echo -e "${YELLOW}[*] Configuring DevOps toolchain for user:${NC} ${BOLD}${REAL_
 echo -e "${YELLOW}[*] Jenkins admin account:${NC} ${BOLD}${JENKINS_ADMIN_USER}${NC}"
 echo -e "${YELLOW}[*] Git & GitHub profile:${NC} ${BOLD}${GITHUB_USERNAME} (${GIT_USER_EMAIL})${NC}"
 echo -e "${YELLOW}[*] DockerHub account:${NC} ${BOLD}${DOCKERHUB_USERNAME}${NC}"
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo -e "${GREEN}[*] GitHub Token: configured (${#GITHUB_TOKEN} chars) -> auto-syncing to Jenkins 'github-token' & 'github-pat'${NC}"
+else
+    echo -e "${YELLOW}[*] GitHub Token: not set (auto-creating working placeholder 'github-token' in Jenkins)${NC}"
+fi
+if [ -n "$DOCKERHUB_TOKEN" ]; then
+    echo -e "${GREEN}[*] DockerHub Token: configured (${#DOCKERHUB_TOKEN} chars) -> auto-syncing to Jenkins 'dockerhub-token'${NC}"
+else
+    echo -e "${YELLOW}[*] DockerHub Token: not set (auto-creating working placeholder 'dockerhub-token' in Jenkins)${NC}"
+fi
 
 # ==============================================================================
 # 1. Base Packages & Dependencies (Idempotent & Multi-Distro Compatible)
@@ -687,10 +783,10 @@ import com.cloudbees.plugins.credentials.impl.*
 import org.jenkinsci.plugins.plaincredentials.impl.*
 import hudson.util.Secret
 
-def githubUser = System.getenv("GITHUB_USERNAME") ?: "${GITHUB_USERNAME}"
-def githubToken = System.getenv("GITHUB_TOKEN") ?: "${GITHUB_TOKEN}"
-def dockerhubUser = System.getenv("DOCKERHUB_USERNAME") ?: "${DOCKERHUB_USERNAME}"
-def dockerhubToken = System.getenv("DOCKERHUB_TOKEN") ?: "${DOCKERHUB_TOKEN}"
+def githubUser = "${GITHUB_USERNAME}"
+def githubToken = "${GITHUB_TOKEN_EFFECTIVE}"
+def dockerhubUser = "${DOCKERHUB_USERNAME}"
+def dockerhubToken = "${DOCKERHUB_TOKEN_EFFECTIVE}"
 
 println "--> [Antigravity DevOps] Initializing Jenkins Credentials (GitHub & DockerHub)..."
 try {
@@ -698,61 +794,60 @@ try {
     if (store != null) {
         def domain = Domain.global()
 
-        // 1. GitHub credentials (ID: github-token)
-        if (githubToken?.trim()) {
-            def upCred = new UsernamePasswordCredentialsImpl(
+        // 1. GitHub credentials (ID: github-token - UsernamePassword)
+        def upCred = new UsernamePasswordCredentialsImpl(
+            CredentialsScope.GLOBAL,
+            "github-token",
+            "GitHub Access Token for \${githubUser}",
+            githubUser,
+            githubToken
+        )
+        def existingUp = store.getCredentials(domain).find { it.id == "github-token" }
+        if (existingUp) { store.removeCredentials(domain, existingUp) }
+        store.addCredentials(domain, upCred)
+
+        // 2. Secret text credentials (ID: github-pat)
+        try {
+            def stCred = new StringCredentialsImpl(
                 CredentialsScope.GLOBAL,
-                "github-token",
-                "GitHub Access Token for \${githubUser}",
-                githubUser,
-                githubToken
+                "github-pat",
+                "GitHub Personal Access Token for \${githubUser}",
+                Secret.fromString(githubToken)
             )
-            def existingUp = store.getCredentials(domain).find { it.id == "github-token" }
-            if (existingUp) { store.removeCredentials(domain, existingUp) }
-            store.addCredentials(domain, upCred)
-
-            // Secret text credentials (ID: github-pat)
-            try {
-                def stCred = new StringCredentialsImpl(
-                    CredentialsScope.GLOBAL,
-                    "github-pat",
-                    "GitHub Personal Access Token for \${githubUser}",
-                    Secret.fromString(githubToken)
-                )
-                def existingSt = store.getCredentials(domain).find { it.id == "github-pat" }
-                if (existingSt) { store.removeCredentials(domain, existingSt) }
-                store.addCredentials(domain, stCred)
-            } catch (Throwable t2) {}
-
-            println "--> [Antigravity DevOps] Jenkins credential 'github-token' & 'github-pat' registered successfully."
+            def existingSt = store.getCredentials(domain).find { it.id == "github-pat" }
+            if (existingSt) { store.removeCredentials(domain, existingSt) }
+            store.addCredentials(domain, stCred)
+        } catch (Throwable t2) {
+            println "--> [Antigravity DevOps] Note on github-pat: " + t2.message
         }
 
-        // 2. DockerHub credentials (ID: dockerhub-token & gitops-dockerhub-token)
-        if (dockerhubToken?.trim()) {
-            def dhCred1 = new UsernamePasswordCredentialsImpl(
-                CredentialsScope.GLOBAL,
-                "dockerhub-token",
-                "DockerHub Access Token for \${dockerhubUser}",
-                dockerhubUser,
-                dockerhubToken
-            )
-            def existingDh1 = store.getCredentials(domain).find { it.id == "dockerhub-token" }
-            if (existingDh1) { store.removeCredentials(domain, existingDh1) }
-            store.addCredentials(domain, dhCred1)
+        // 3. DockerHub credentials (ID: dockerhub-token & gitops-dockerhub-token)
+        def dhCred1 = new UsernamePasswordCredentialsImpl(
+            CredentialsScope.GLOBAL,
+            "dockerhub-token",
+            "DockerHub Access Token for \${dockerhubUser}",
+            dockerhubUser,
+            dockerhubToken
+        )
+        def existingDh1 = store.getCredentials(domain).find { it.id == "dockerhub-token" }
+        if (existingDh1) { store.removeCredentials(domain, existingDh1) }
+        store.addCredentials(domain, dhCred1)
 
-            def dhCred2 = new UsernamePasswordCredentialsImpl(
-                CredentialsScope.GLOBAL,
-                "gitops-dockerhub-token",
-                "DockerHub Access Token for \${dockerhubUser} (GitOps alias)",
-                dockerhubUser,
-                dockerhubToken
-            )
-            def existingDh2 = store.getCredentials(domain).find { it.id == "gitops-dockerhub-token" }
-            if (existingDh2) { store.removeCredentials(domain, existingDh2) }
-            store.addCredentials(domain, dhCred2)
+        def dhCred2 = new UsernamePasswordCredentialsImpl(
+            CredentialsScope.GLOBAL,
+            "gitops-dockerhub-token",
+            "DockerHub Access Token for \${dockerhubUser} (GitOps alias)",
+            dockerhubUser,
+            dockerhubToken
+        )
+        def existingDh2 = store.getCredentials(domain).find { it.id == "gitops-dockerhub-token" }
+        if (existingDh2) { store.removeCredentials(domain, existingDh2) }
+        store.addCredentials(domain, dhCred2)
 
-            println "--> [Antigravity DevOps] Jenkins credentials 'dockerhub-token' & 'gitops-dockerhub-token' registered successfully."
-        }
+        Jenkins.instance.save()
+        println "--> [Antigravity DevOps] Jenkins credentials registered successfully: github-token, github-pat, dockerhub-token, gitops-dockerhub-token"
+    } else {
+        println "--> [Antigravity DevOps] Credentials store not found!"
     }
 } catch (Throwable t) {
     println "--> [Antigravity DevOps] Note on credentials store: " + t.message
@@ -820,6 +915,71 @@ chmod 700 "${JENKINS_HOME_HOST}/.ssh" 2>/dev/null || true
 chmod 600 "${JENKINS_HOME_HOST}/.ssh/id_ed25519" 2>/dev/null || true
 chown -R 1000:1000 "${JENKINS_HOME_HOST}/.ssh" 2>/dev/null || true
 
+# Helper functions for live Groovy script execution against Jenkins API
+apply_jenkins_groovy_live() {
+    local script_file="$1"
+    local desc="$2"
+    if [ ! -f "$script_file" ]; then
+        return 0
+    fi
+    local cookie_jar
+    cookie_jar=$(mktemp)
+    local crumb_res
+    crumb_res=$(curl -s -c "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
+        "http://localhost:8080/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" 2>/dev/null || true)
+    
+    local crumb_header=()
+    if [ -n "$crumb_res" ] && [[ "$crumb_res" =~ : ]]; then
+        crumb_header=(-H "$crumb_res")
+    fi
+    
+    local out
+    out=$(curl -s -b "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
+        "${crumb_header[@]}" \
+        --data-urlencode "script=$(cat "$script_file")" \
+        "http://localhost:8080/scriptText" 2>/dev/null || true)
+    rm -f "$cookie_jar" 2>/dev/null || true
+    echo "$out"
+}
+
+sync_jenkins_credentials_live() {
+    echo -e "${YELLOW}[*] Syncing Jenkins credentials ('github-token', 'dockerhub-token') live into running instance...${NC}"
+    apply_jenkins_groovy_live "${JENKINS_HOME_HOST}/init.groovy.d/02-credentials.groovy" "credentials" >/dev/null 2>&1 || true
+    apply_jenkins_groovy_live "${JENKINS_HOME_HOST}/init.groovy.d/03-create-pipeline-job.groovy" "pipeline job" >/dev/null 2>&1 || true
+    
+    local cookie_jar
+    cookie_jar=$(mktemp)
+    local crumb_res
+    crumb_res=$(curl -s -c "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
+        "http://localhost:8080/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)" 2>/dev/null || true)
+    local crumb_header=()
+    if [ -n "$crumb_res" ] && [[ "$crumb_res" =~ : ]]; then
+        crumb_header=(-H "$crumb_res")
+    fi
+    local verify_script='
+import com.cloudbees.plugins.credentials.*
+def store = Jenkins.instance.getExtensionList("com.cloudbees.plugins.credentials.SystemCredentialsProvider")[0]?.getStore()
+def list = store?.getCredentials(com.cloudbees.plugins.credentials.domains.Domain.global())?.collect { it.id } ?: []
+println list.join(",")
+'
+    local active_creds
+    active_creds=$(curl -s -b "$cookie_jar" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
+        "${crumb_header[@]}" \
+        --data-urlencode "script=${verify_script}" \
+        "http://localhost:8080/scriptText" 2>/dev/null || true)
+    rm -f "$cookie_jar" 2>/dev/null || true
+    
+    if echo "$active_creds" | grep -q "github-token" && echo "$active_creds" | grep -q "dockerhub-token"; then
+        echo -e "${GREEN}[✓] Jenkins credentials automatically verified active:${NC}"
+        echo -e "    • github-token (GitHub credentials for ${GITHUB_USERNAME})"
+        echo -e "    • dockerhub-token (DockerHub credentials for ${DOCKERHUB_USERNAME})"
+        echo -e "    • github-pat (Personal Access Token Secret text)"
+        echo -e "    • gitops-dockerhub-token (GitOps credential alias)"
+    else
+        echo -e "${YELLOW}[*] Credentials store updated. Current credentials: ${active_creds}${NC}"
+    fi
+}
+
 # 6. Manage Jenkins Container State
 JENKINS_RUNNING=$(docker ps -q -f name=^jenkins$ 2>/dev/null || true)
 JENKINS_EXISTS=$(docker ps -aq -f name=^jenkins$ 2>/dev/null || true)
@@ -843,6 +1003,7 @@ if [ -n "$JENKINS_RUNNING" ]; then
     LOGIN_CHECK=$(curl -s -o /dev/null -w "%{http_code}" -u "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" http://localhost:8080/api/json 2>/dev/null || echo "000")
     if [ "$LOGIN_CHECK" = "200" ]; then
         echo -e "${GREEN}[✓] Jenkins login verified for user '${JENKINS_ADMIN_USER}'.${NC}"
+        sync_jenkins_credentials_live
     else
         echo -e "${YELLOW}[*] Applying credentials configuration and restarting Jenkins container...${NC}"
         docker restart jenkins >/dev/null 2>&1 || true
@@ -867,9 +1028,9 @@ else
       -e JENKINS_ADMIN_USER="${JENKINS_ADMIN_USER}" \
       -e JENKINS_ADMIN_PASSWORD="${JENKINS_ADMIN_PASSWORD}" \
       -e GITHUB_USERNAME="${GITHUB_USERNAME}" \
-      -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+      -e GITHUB_TOKEN="${GITHUB_TOKEN_EFFECTIVE}" \
       -e DOCKERHUB_USERNAME="${DOCKERHUB_USERNAME}" \
-      -e DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN}" \
+      -e DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN_EFFECTIVE}" \
       jenkins/jenkins:lts
 
     # Connect to minikube network if present
@@ -939,6 +1100,7 @@ for i in {1..20}; do
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/login 2>/dev/null || echo "000")
     if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "302" ]; then
         echo -e "${GREEN}[✓] Jenkins Web UI is active and ready for login!${NC}"
+        sync_jenkins_credentials_live
         break
     fi
     sleep 3
