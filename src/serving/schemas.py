@@ -1,19 +1,26 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict
 
+
 class SensorTelemetryItem(BaseModel):
     timestamp_sec: Optional[float] = 0.0
     vibration_x: float = Field(..., description="Vibration on X-axis in g")
     vibration_y: float = Field(..., description="Vibration on Y-axis in g")
     vibration_z: float = Field(..., description="Vibration on Z-axis in g")
-    temperature_c: float = Field(..., description="Bearing / spindle temperature in Celsius")
+    temperature_c: float = Field(
+        ..., description="Bearing / spindle temperature in Celsius"
+    )
     pressure_bar: float = Field(..., description="Hydraulic system pressure in bar")
     spindle_rpm: float = Field(..., description="Motor rotation speed in RPM")
-    acoustic_emission_db: float = Field(..., description="High-frequency acoustic emissions in dB")
+    acoustic_emission_db: float = Field(
+        ..., description="High-frequency acoustic emissions in dB"
+    )
+
 
 class SensorBatchRequest(BaseModel):
     machine_id: str = "CNC-MILL-ALPHA-01"
     readings: List[SensorTelemetryItem]
+
 
 class AnomalyResult(BaseModel):
     index: int
@@ -21,6 +28,7 @@ class AnomalyResult(BaseModel):
     reconstruction_error: float
     threshold: float
     severity: str  # Nominal, Warning, Critical
+
 
 class SensorInferenceResponse(BaseModel):
     machine_id: str
@@ -32,11 +40,13 @@ class SensorInferenceResponse(BaseModel):
     processed_by_region: str
     inference_device: str
 
+
 class VisionInspectionRequest(BaseModel):
     assembly_line_id: str = "LINE-SURFACE-INSPECT-04"
     image_base64: Optional[str] = None
     # Support direct normalized tensor or test matrix
     image_tensor: Optional[List[List[List[float]]]] = None
+
 
 class VisionInferenceResponse(BaseModel):
     assembly_line_id: str
@@ -47,6 +57,7 @@ class VisionInferenceResponse(BaseModel):
     processed_by_cloud: str
     processed_by_region: str
     inference_device: str
+
 
 class ClusterHealthResponse(BaseModel):
     status: str

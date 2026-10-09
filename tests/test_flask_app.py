@@ -1,11 +1,12 @@
-import pytest
-from main import app, predict_efficiency
+from main import app
+
 
 @pytest.fixture
 def client():
     app.config["TESTING"] = True
     with app.test_client() as client:
         yield client
+
 
 def test_health_check(client):
     response = client.get("/api/health")
@@ -14,6 +15,7 @@ def test_health_check(client):
     assert data["status"] == "healthy"
     assert "Smart Manufacturing" in data["service"]
 
+
 def test_presets_endpoint(client):
     response = client.get("/api/presets")
     assert response.status_code == 200
@@ -21,10 +23,12 @@ def test_presets_endpoint(client):
     assert "optimal" in data
     assert "critical" in data
 
+
 def test_index_page(client):
     response = client.get("/")
     assert response.status_code == 200
     assert b"Smart Manufacturing" in response.data
+
 
 def test_predict_endpoint(client):
     payload = {
@@ -41,7 +45,7 @@ def test_predict_endpoint(client):
         "Year": 2026,
         "Month": 10,
         "Day": 8,
-        "Hour": 14
+        "Hour": 14,
     }
     response = client.post("/api/predict", json=payload)
     assert response.status_code == 200

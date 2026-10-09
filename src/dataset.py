@@ -2,10 +2,13 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 
+
 class SensorTelemetryDataset(Dataset):
     def __init__(self, features: np.ndarray, labels: np.ndarray = None):
         self.features = torch.tensor(features, dtype=torch.float32)
-        self.labels = torch.tensor(labels, dtype=torch.float32) if labels is not None else None
+        self.labels = (
+            torch.tensor(labels, dtype=torch.float32) if labels is not None else None
+        )
 
     def __len__(self) -> int:
         return len(self.features)

@@ -2,12 +2,13 @@ import unittest
 from unittest.mock import patch, MagicMock
 from src.failover.health_probe import MultiCloudHealthProber
 
+
 class TestMultiCloudFailover(unittest.TestCase):
     def setUp(self):
         self.prober = MultiCloudHealthProber(
             primary_url="http://mock-aws/health",
             secondary_url="http://mock-gcp/health",
-            unhealthy_threshold=3
+            unhealthy_threshold=3,
         )
 
     @patch("requests.get")
@@ -64,6 +65,7 @@ class TestMultiCloudFailover(unittest.TestCase):
         self.prober.run_probe_cycle()
         self.assertEqual(self.prober.active_cloud, "AWS (Primary: us-east-1)")
         self.assertEqual(self.prober.consecutive_primary_failures, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
