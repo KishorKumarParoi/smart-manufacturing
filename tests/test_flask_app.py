@@ -60,3 +60,16 @@ def test_metrics_endpoint(client):
     response = client.get("/metrics")
     assert response.status_code == 200
     assert b"python_gc" in response.data or b"smart_mfg" in response.data
+
+
+def test_cache_stats_endpoint(client):
+    response = client.get("/api/cache/stats")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert "redis_connected" in data
+
+
+def test_telemetry_latest_endpoint(client):
+    response = client.get("/api/telemetry/latest")
+    assert response.status_code == 200
+

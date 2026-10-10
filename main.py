@@ -1,5 +1,8 @@
 import os
 import time
+import json
+import hashlib
+import logging
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, Response
 import joblib
@@ -13,6 +16,22 @@ from prometheus_client import (
 )
 
 app = Flask(__name__, template_folder="src/templates", static_folder="src/static")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# Redis In-Memory Telemetry & Prediction Cache Connection
+REDIS_HOST = os.environ.get("REDIS_HOST", "redis-service")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
+redis_client = None
+try:
+    import redis
+    redis_client = redis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT, db=0, socket_timeout=0.5, decode_responses=True
+    )
+    redis_client.ping()
+    app.logger.info(f"[✓] Connected to Redis Cache at {REDIS_HOST}:{REDIS_PORT}")
+except Exception as _e:
+    redis_client = None
+    app.logger.info(f"[i] Redis not connected ({_e}) - falling back to memory execution")
 
 # Prometheus Metrics Collectors
 REQUEST_COUNT = Counter(
@@ -38,6 +57,10 @@ CONFIDENCE_GAUGE = Gauge(
     "smart_mfg_last_prediction_confidence",
     "Confidence score of the most recent inference prediction",
     ["prediction_class"],
+)
+CACHE_HIT_COUNTER = Counter(
+    "smart_mfg_cache_hits_total",
+    "Total prediction cache hits served from Redis",
 )
 
 MODEL_PATH = "artifacts/models/model.pkl"
@@ -429,6 +452,29 @@ def predict_efficiency(form_data):
             cleaned_inputs[feat] = final_val
             row.append(final_val)
 
+    # 1. Fast Redis Prediction Cache Lookup
+    cache_key = "mfg:pred:" + hashlib.md5(
+        json.dumps(cleaned_inputs, sort_keys=True).encode()
+    ).hexdigest()
+    if redis_client:
+        try:
+            cached_val = redis_client.get(cache_key)
+            if cached_val:
+                cached_dict = json.loads(cached_val)
+                cached_dict["cached"] = True
+                CACHE_HIT_COUNTER.inc()
+                # Structured JSON logging for Filebeat / Logstash / Elasticsearch
+                log_payload = {
+                    "event": "industrial_inference",
+                    "timestamp": datetime.now().isoformat(),
+                    "cached": True,
+                    **cached_dict,
+                }
+                app.logger.info(json.dumps(log_payload))
+                return cached_dict
+        except Exception:
+            pass
+
     # Scale with feature names to suppress warnings
     df_input = pd.DataFrame([row], columns=FEATURES)
     scaled_array = scl.transform(df_input)
@@ -467,7 +513,7 @@ def predict_efficiency(form_data):
         recommendation = "🚨 Efficiency Drop: High error rate or mechanical friction detected. Immediate inspection recommended."
         status_color = "rose"
 
-    return {
+    result_data = {
         "status": "success",
         "prediction": label_name,
         "confidence": confidence,
@@ -475,7 +521,38 @@ def predict_efficiency(form_data):
         "probabilities": prob_dict,
         "recommendation": recommendation,
         "inputs": cleaned_inputs,
+        "cached": False,
     }
+
+    # 2. Update Redis Cache & Real-Time Sensor Telemetry Buffer
+    if redis_client:
+        try:
+            redis_client.setex(cache_key, 300, json.dumps(result_data))
+            telemetry_snapshot = {
+                "timestamp": datetime.now().isoformat(),
+                "machine_status": label_name,
+                "confidence": confidence,
+                **cleaned_inputs,
+            }
+            redis_client.set("mfg:latest_telemetry", json.dumps(telemetry_snapshot))
+            if label_name == "Low":
+                redis_client.incr("mfg:anomaly_count")
+        except Exception:
+            pass
+
+    # 3. Structured JSON Logging for Filebeat -> Logstash -> Elasticsearch
+    app.logger.info(
+        json.dumps(
+            {
+                "event": "industrial_inference",
+                "timestamp": datetime.now().isoformat(),
+                "cached": False,
+                **result_data,
+            }
+        )
+    )
+
+    return result_data
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -538,6 +615,40 @@ def health():
         ),
         200,
     )
+
+
+@app.route("/api/cache/stats", methods=["GET"])
+def cache_stats():
+    stats = {"redis_connected": redis_client is not None}
+    if redis_client:
+        try:
+            info = redis_client.info("memory")
+            anomalies = redis_client.get("mfg:anomaly_count") or 0
+            stats.update(
+                {
+                    "status": "connected",
+                    "used_memory_human": info.get("used_memory_human", "N/A"),
+                    "total_mfg_keys": len(redis_client.keys("mfg:*")),
+                    "anomaly_counter": int(anomalies),
+                }
+            )
+        except Exception as e:
+            stats["error"] = str(e)
+    else:
+        stats["status"] = "offline_fallback"
+    return jsonify(stats), 200
+
+
+@app.route("/api/telemetry/latest", methods=["GET"])
+def latest_telemetry():
+    if redis_client:
+        try:
+            data = redis_client.get("mfg:latest_telemetry")
+            if data:
+                return jsonify(json.loads(data)), 200
+        except Exception:
+            pass
+    return jsonify({"status": "no_telemetry_buffered"}), 200
 
 
 @app.after_request

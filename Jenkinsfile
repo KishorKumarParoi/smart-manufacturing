@@ -14,7 +14,7 @@ pipeline {
         BUILD_TAG                 = "${env.BUILD_NUMBER}"
         DOCKER_HUB_CREDENTIALS_ID = "dockerhub-token"
         GITHUB_CREDENTIALS_ID     = "github-token"
-        SERVER_PUBLIC_IP          = "136.114.220.165"
+        SERVER_PUBLIC_IP          = "136.71.59.13"
         
         // Application & Platform Endpoints
         WEB_PORT                  = "30080"
@@ -25,6 +25,8 @@ pipeline {
         NEXUS_PORT                = "8081"
         PROMETHEUS_PORT           = "9090"
         GRAFANA_PORT              = "3000"
+        KIBANA_PORT               = "5601"
+        KIBANA_NODEPORT           = "30601"
         
         // SonarQube & Nexus Integrations
         SONARQUBE_URL             = "http://sonarqube:9000"
@@ -292,7 +294,10 @@ pipeline {
         stage('GitOps Deploy & Sync ArgoCD') {
             steps {
                 sh '''
-                    echo "[*] Applying Kubernetes manifests for Smart Manufacturing..."
+                    echo "[*] Applying Kubernetes manifests for Smart Manufacturing, Redis & EFK Logging..."
+                    kubectl apply -f manifests/redis/ 2>/dev/null || true
+                    kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl apply -f manifests/logging/ 2>/dev/null || true
                     kubectl apply -f manifests/deployment.yaml -f manifests/service.yaml
                     kubectl apply -f manifests/monitoring/ 2>/dev/null || true
                     kubectl apply -f argocd/application.yaml 2>/dev/null || true
@@ -334,11 +339,10 @@ pipeline {
                     kubectl rollout restart deployment/${APP_NAME}
                     kubectl rollout status deployment/${APP_NAME} --timeout=120s
 
-                    echo "[*] Pod Status in default namespace:"
+                    echo "[*] Pod Status across platform namespaces:"
                     kubectl get pods -l app=${APP_NAME} -o wide
-
-                    echo "[*] Pod Status in monitoring namespace:"
                     kubectl get pods -n monitoring -o wide
+                    kubectl get pods -n logging -o wide
 
                     echo "[*] Testing health and telemetry endpoints with retries..."
                     MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.49.2")
@@ -355,6 +359,10 @@ pipeline {
                         sleep 4
                     done
 
+                    echo "[*] Verifying Redis Prediction Cache & Telemetry statistics..."
+                    curl -s "http://${MINIKUBE_IP}:30080/api/cache/stats" || true
+                    echo ""
+
                     echo "[*] Verifying Prometheus scraping endpoint..."
                     curl -s "http://${MINIKUBE_IP}:30080/metrics" | head -n 12 || true
                     echo ""
@@ -366,6 +374,7 @@ pipeline {
                     echo " 🌐 Smart Manufacturing (Alt):   http://${SERVER_PUBLIC_IP}:${WEB_ALT_PORT}"
                     echo " 📊 Prometheus Metrics UI:       http://${SERVER_PUBLIC_IP}:${PROMETHEUS_PORT}"
                     echo " 📈 Grafana AI Telemetry UI:     http://${SERVER_PUBLIC_IP}:${GRAFANA_PORT}"
+                    echo " 🔭 Kibana Log Analytics UI:     http://${SERVER_PUBLIC_IP}:${KIBANA_PORT}"
                     echo " 🔍 SonarQube Code Quality UI:   http://${SERVER_PUBLIC_IP}:${SONARQUBE_PORT}"
                     echo " 📦 Sonatype Nexus Repository:   http://${SERVER_PUBLIC_IP}:${NEXUS_PORT}"
                     echo " 🚀 ArgoCD GitOps Dashboard:     http://${SERVER_PUBLIC_IP}:${ARGOCD_PORT}"
