@@ -30,3 +30,9 @@ variable "disk_size_gb" {
   default = 100
   description = "Boot disk size in GB (Nexus & Docker images require 50-100GB)"
 }
+
+variable "admin_source_ranges" {
+  type        = list(string)
+  default     = ["35.235.240.0/20"] # Default: GCP Identity-Aware Proxy (IAP) secure CIDR
+  description = "CIDR blocks authorized to reach management ports (SSH, Jenkins, Nexus, SonarQube, ArgoCD). DO NOT set to 0.0.0.0/0."
+}

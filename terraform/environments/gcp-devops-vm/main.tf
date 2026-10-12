@@ -14,18 +14,33 @@ provider "google" {
   zone    = var.zone
 }
 
-# 1. Firewall rules for DevOps tools
-resource "google_compute_firewall" "devops_ports" {
-  name    = "allow-devops-platform"
+# 1. Firewall rules: Public Application Ingress Tier (Ports 80, 443, 8000 only)
+resource "google_compute_firewall" "devops_public_web" {
+  name    = "allow-devops-public-web"
+  network = "default"
+
+  allow {
+    protocol = "tcp"
+    ports = [
+      "80",   # HTTP
+      "443",  # HTTPS
+      "8000"  # Smart Manufacturing Public API
+    ]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["devops-public-web", "http-server", "https-server"]
+}
+
+# 2. Firewall rules: Protected Admin Management Tier (Strictly restricted to Admin CIDRs / IAP)
+resource "google_compute_firewall" "devops_admin_mgmt" {
+  name    = "allow-devops-admin-mgmt"
   network = "default"
 
   allow {
     protocol = "tcp"
     ports = [
       "22",          # SSH
-      "80",          # HTTP
-      "443",         # HTTPS
-      "8000",        # Smart Manufacturing API
       "8080",        # Jenkins Web UI
       "8081",        # Nexus Repository
       "9000",        # SonarQube
@@ -37,17 +52,19 @@ resource "google_compute_firewall" "devops_ports" {
     ]
   }
 
-  source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["allow-devops-platform", "devops-control-plane", "devops-vm"]
+  # Strictly restricted to authenticated admin ranges (DO NOT use 0.0.0.0/0 to prevent bot exploitation)
+  source_ranges = var.admin_source_ranges
+  target_tags   = ["devops-control-plane", "devops-vm"]
 }
 
-# 2. GCP Compute VM Instance
+# 3. GCP Compute VM Instance
 resource "google_compute_instance" "devops_node" {
-  name         = var.instance_name
-  machine_type = var.machine_type
-  zone         = var.zone
+  name            = var.instance_name
+  machine_type    = var.machine_type
+  zone            = var.zone
+  can_ip_forward  = false # HARDENING: Disallow IP forwarding to prevent open relay / transit egress abuse
 
-  tags = ["allow-devops-platform", "devops-control-plane", "devops-vm", "http-server", "https-server"]
+  tags = ["devops-public-web", "devops-control-plane", "devops-vm", "http-server", "https-server"]
 
   boot_disk {
     initialize_params {
@@ -60,7 +77,7 @@ resource "google_compute_instance" "devops_node" {
   network_interface {
     network = "default"
     access_config {
-      // Ephemeral external IP
+      network_tier = "STANDARD" # HARDENING: Standard tier significantly cuts egress charges compared to Premium
     }
   }
 

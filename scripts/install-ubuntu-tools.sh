@@ -62,10 +62,12 @@ DISK_SIZE="100"
 DISK_TYPE="pd-balanced"
 DISK_RESOURCE_POLICY="projects/project-53d8ce01-b0e0-4f8b-94c/regions/us-central1/resourcePolicies/default-schedule-1"
 SCOPES="https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write,https://www.googleapis.com/auth/service.management.readonly,https://www.googleapis.com/auth/servicecontrol,https://www.googleapis.com/auth/trace.append"
-TARGET_TAGS="http-server,https-server,lb-health-check,allow-devops-platform,devops-control-plane,devops-vm"
-FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
-REQUIRED_PORTS=(22 80 443 3000 5000 5601 6379 8000 8080 8081 8082 9000 9090 9200 30080 30090 30300 30601 30751 30752 50000)
-PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:3000,tcp:5000,tcp:5601,tcp:6379,tcp:8000,tcp:8080,tcp:8081,tcp:8082,tcp:9000,tcp:9090,tcp:9200,tcp:30080,tcp:30090,tcp:30300,tcp:30601,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
+TARGET_TAGS="http-server,https-server,lb-health-check,devops-public-web,devops-control-plane,devops-vm"
+FIREWALL_PUBLIC="allow-devops-public-web"
+FIREWALL_ADMIN="allow-devops-admin-mgmt"
+PUBLIC_PORT_SPEC="tcp:80,tcp:443,tcp:8000"
+ADMIN_PORT_SPEC="tcp:22,tcp:3000,tcp:5000,tcp:5601,tcp:8080,tcp:8081,tcp:8082,tcp:9000,tcp:9090,tcp:30080,tcp:30090,tcp:30300,tcp:30601,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
+# NOTE: Redis (6379) and Elasticsearch (9200) are internal-only and NEVER exposed to external firewall rules!
 
 # Check if running in VM Provisioning mode (e.g. from local Mac or workstation)
 RUN_MODE="full"
@@ -119,8 +121,8 @@ provision_gcp_vm_and_bootstrap() {
             --project="$GCP_PROJECT" \
             --zone="$GCP_ZONE" \
             --machine-type="$MACHINE_TYPE" \
-            --network-interface="network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default" \
-            --can-ip-forward \
+            --network-interface="network-tier=STANDARD,stack-type=IPV4_ONLY,subnet=default" \
+            --no-can-ip-forward \
             --maintenance-policy=MIGRATE \
             --provisioning-model=STANDARD \
             --service-account="$SERVICE_ACCOUNT" \
@@ -137,8 +139,8 @@ provision_gcp_vm_and_bootstrap() {
             --project="$GCP_PROJECT" \
             --zone="$GCP_ZONE" \
             --machine-type="$MACHINE_TYPE" \
-            --network-interface="network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default" \
-            --can-ip-forward \
+            --network-interface="network-tier=STANDARD,stack-type=IPV4_ONLY,subnet=default" \
+            --no-can-ip-forward \
             --maintenance-policy=MIGRATE \
             --provisioning-model=STANDARD \
             --service-account="$SERVICE_ACCOUNT" \
@@ -151,26 +153,52 @@ provision_gcp_vm_and_bootstrap() {
             --labels="goog-ec-src=vm_add-gcloud" \
             --reservation-affinity=any \
             --quiet
-        echo -e "${GREEN}[✓] Instance '${VM_NAME}' successfully created!${NC}"
+        echo -e "${GREEN}[✓] Instance '${VM_NAME}' successfully created with IP forwarding disabled!${NC}"
     fi
 
     # 2. Get External IP
     VM_IP=$(gcloud compute instances describe "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
     echo -e "${GREEN}[✓] Instance '${VM_NAME}' Public IP:${NC} ${BOLD}${VM_IP}${NC}"
 
-    # 3. Ensure GCP Cloud Firewall allows all project ports
-    echo -e "${YELLOW}[*] Configuring GCP Firewall '${FIREWALL_NAME}' for all platform ports...${NC}"
-    gcloud compute firewall-rules update "$FIREWALL_NAME" \
+    # 3. Ensure GCP Cloud Firewall enforces zero-trust tiered rules (Anti-Egress / Bot Prevention)
+    echo -e "${YELLOW}[*] Configuring secure tiered GCP Cloud Firewall (Egress & Bot Abuse Protection)...${NC}"
+    LOCAL_CLIENT_IP=$(curl -s -m 4 https://api.ipify.org 2>/dev/null || curl -s -m 4 https://ifconfig.me 2>/dev/null || echo "")
+    if [ -n "$LOCAL_CLIENT_IP" ]; then
+        ADMIN_SOURCE_CIDR="${LOCAL_CLIENT_IP}/32,35.235.240.0/20"
+        echo -e "${GREEN}[✓] Restricted admin tools to your IP (${LOCAL_CLIENT_IP}) + GCP IAP tunnel.${NC}"
+    else
+        ADMIN_SOURCE_CIDR="35.235.240.0/20"
+        echo -e "${YELLOW}[!] Defaulting admin tools access to GCP IAP (35.235.240.0/20).${NC}"
+    fi
+
+    # 3.1 Public Web Tier (Ports 80, 443, 8000 only)
+    gcloud compute firewall-rules update "$FIREWALL_PUBLIC" \
         --project="$GCP_PROJECT" \
-        --allow="$PORT_SPEC" \
+        --allow="$PUBLIC_PORT_SPEC" \
         --source-ranges="0.0.0.0/0" \
         --quiet >/dev/null 2>&1 || \
-    gcloud compute firewall-rules create "$FIREWALL_NAME" \
+    gcloud compute firewall-rules create "$FIREWALL_PUBLIC" \
         --project="$GCP_PROJECT" \
-        --allow="$PORT_SPEC" \
+        --allow="$PUBLIC_PORT_SPEC" \
         --source-ranges="0.0.0.0/0" \
-        --target-tags="$TARGET_TAGS" \
+        --target-tags="devops-public-web,http-server,https-server" \
         --quiet >/dev/null 2>&1 || true
+
+    # 3.2 Protected Admin Management Tier (Strictly restricted, NEVER 0.0.0.0/0)
+    gcloud compute firewall-rules update "$FIREWALL_ADMIN" \
+        --project="$GCP_PROJECT" \
+        --allow="$ADMIN_PORT_SPEC" \
+        --source-ranges="$ADMIN_SOURCE_CIDR" \
+        --quiet >/dev/null 2>&1 || \
+    gcloud compute firewall-rules create "$FIREWALL_ADMIN" \
+        --project="$GCP_PROJECT" \
+        --allow="$ADMIN_PORT_SPEC" \
+        --source-ranges="$ADMIN_SOURCE_CIDR" \
+        --target-tags="devops-control-plane,devops-vm" \
+        --quiet >/dev/null 2>&1 || true
+
+    # Delete deprecated legacy wide-open firewall rule if present
+    gcloud compute firewall-rules delete "allow-devops-platform" --project="$GCP_PROJECT" --quiet >/dev/null 2>&1 || true
 
     gcloud compute instances add-tags "$VM_NAME" \
         --zone="$GCP_ZONE" \
@@ -188,10 +216,11 @@ provision_gcp_vm_and_bootstrap() {
         sleep 3
     done
 
-    # 5. Synchronize repository files to VM
+    # 5. Synchronize repository files to VM (excluding large local virtualenvs)
     echo -e "${YELLOW}[*] Synchronizing Smart Manufacturing repository & manifests to VM...${NC}"
-    gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --command="mkdir -p ~/smart-manufacturing" --quiet
-    gcloud compute scp --recurse --project="$GCP_PROJECT" --zone="$GCP_ZONE" "$WORKSPACE_ROOT"/* "${VM_NAME}:~/smart-manufacturing/" --quiet >/dev/null 2>&1 || true
+    tar -czf - -C "$WORKSPACE_ROOT" --exclude='.venv' --exclude='65 - *' . | \
+        gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
+        --command="mkdir -p ~/smart-manufacturing && tar -xzf - -C ~/smart-manufacturing" --quiet
 
     # 6. Execute On-Host Bootstrap
     echo -e "${YELLOW}[*] Executing full DevOps & Industrial AI platform setup on remote VM...${NC}"
@@ -379,7 +408,29 @@ EOF_LIMITS
 
     sync
     echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    echo -e "${GREEN}[✓] System RAM and kernel network parameters optimized.${NC}"
+
+    # Egress Hardening 1: Drop routed transit traffic on external interfaces
+    if [ -f /etc/default/ufw ]; then
+        sed -i 's/DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="DROP"/' /etc/default/ufw 2>/dev/null || true
+    fi
+
+    # Egress Hardening 2: Install and configure fail2ban to mitigate automated scanners
+    if command -v apt-get >/dev/null 2>&1; then
+        dpkg -s fail2ban >/dev/null 2>&1 || (apt-get update -y && apt-get install -y fail2ban iproute2 >/dev/null 2>&1 || true)
+        systemctl enable fail2ban >/dev/null 2>&1 || true
+        systemctl restart fail2ban >/dev/null 2>&1 || true
+    fi
+
+    # Egress Hardening 3: Kernel Traffic Control (tc) Egress Ceiling (Cap at 25 Mbps)
+    # This prevents any compromised process or bot from pushing 100 MB/s and draining terabytes
+    WAN_IF=$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' || echo "eth0")
+    if [ -n "$WAN_IF" ] && command -v tc >/dev/null 2>&1; then
+        tc qdisc del dev "$WAN_IF" root 2>/dev/null || true
+        tc qdisc add dev "$WAN_IF" root tbf rate 25mbit burst 64kbit latency 400ms 2>/dev/null || true
+        echo -e "${GREEN}[✓] Egress Guard active: Outbound network traffic on ${WAN_IF} capped at 25 Mbps.${NC}"
+    fi
+
+    echo -e "${GREEN}[✓] System RAM, kernel network parameters, and anti-egress protection active.${NC}"
 }
 
 # Minikube Self-Healing & Network Recovery Function
@@ -731,6 +782,12 @@ if [ -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" ]; then
     echo -e "${GREEN}[✓] Smart Manufacturing Core application manifests applied.${NC}"
 fi
 
+# Apply Anti-Egress Kubernetes NetworkPolicies
+if [ -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" ]; then
+    kubectl apply -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" 2>/dev/null || true
+    echo -e "${GREEN}[✓] Kubernetes Egress Guard NetworkPolicies applied.${NC}"
+fi
+
 # ==============================================================================
 # 10. Jenkins CI/CD Controller with Embedded Toolchain
 # ==============================================================================
@@ -932,7 +989,7 @@ setup_systemd_forward "smart-manufacturing-port-forward" "Smart Manufacturing We
 
 echo -e "${GREEN}[✓] Persistent systemd port-forward daemons active (ArgoCD, Prometheus, Grafana, Kibana, Smart Mfg).${NC}"
 
-# GCP Cloud Firewall verification
+# GCP Cloud Firewall verification (Tiered Egress & Bot Protection)
 GCP_METADATA_HEADER="Metadata-Flavor: Google"
 GCP_METADATA_BASE="http://metadata.google.internal/computeMetadata/v1"
 GCP_VM_NAME=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/instance/name" 2>/dev/null || true)
@@ -943,17 +1000,35 @@ if [ -n "$GCP_VM_NAME" ]; then
     GCP_PROJECT=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
 
     if command -v gcloud >/dev/null 2>&1; then
-        gcloud compute firewall-rules update "$FIREWALL_NAME" \
+        # 1. Public Web Tier (80, 443, 8000 only)
+        gcloud compute firewall-rules update "$FIREWALL_PUBLIC" \
             --project="$GCP_PROJECT" \
-            --allow="$PORT_SPEC" \
+            --allow="$PUBLIC_PORT_SPEC" \
             --source-ranges="0.0.0.0/0" \
             --quiet >/dev/null 2>&1 || \
-        gcloud compute firewall-rules create "$FIREWALL_NAME" \
+        gcloud compute firewall-rules create "$FIREWALL_PUBLIC" \
             --project="$GCP_PROJECT" \
-            --allow="$PORT_SPEC" \
+            --allow="$PUBLIC_PORT_SPEC" \
             --source-ranges="0.0.0.0/0" \
-            --target-tags="$TARGET_TAGS" \
+            --target-tags="devops-public-web,http-server,https-server" \
             --quiet >/dev/null 2>&1 || true
+
+        # 2. Protected Admin Tier (IAP & Admin only - NEVER 0.0.0.0/0)
+        ADMIN_CIDR_HOST="35.235.240.0/20"
+        gcloud compute firewall-rules update "$FIREWALL_ADMIN" \
+            --project="$GCP_PROJECT" \
+            --allow="$ADMIN_PORT_SPEC" \
+            --source-ranges="$ADMIN_CIDR_HOST" \
+            --quiet >/dev/null 2>&1 || \
+        gcloud compute firewall-rules create "$FIREWALL_ADMIN" \
+            --project="$GCP_PROJECT" \
+            --allow="$ADMIN_PORT_SPEC" \
+            --source-ranges="$ADMIN_CIDR_HOST" \
+            --target-tags="devops-control-plane,devops-vm" \
+            --quiet >/dev/null 2>&1 || true
+
+        # Clean legacy open rule
+        gcloud compute firewall-rules delete "allow-devops-platform" --project="$GCP_PROJECT" --quiet >/dev/null 2>&1 || true
 
         gcloud compute instances add-tags "$GCP_VM_NAME" \
             --zone="$GCP_ZONE" \
@@ -961,7 +1036,7 @@ if [ -n "$GCP_VM_NAME" ]; then
             --tags="$TARGET_TAGS" \
             --quiet >/dev/null 2>&1 || true
     fi
-    echo -e "${GREEN}[✓] GCP Firewall '${FIREWALL_NAME}' verified and updated with all platform ports.${NC}"
+    echo -e "${GREEN}[✓] Tiered GCP Firewalls verified ('${FIREWALL_PUBLIC}', '${FIREWALL_ADMIN}'). Protected against bot scanning.${NC}"
 fi
 
 optimize_system_and_ram

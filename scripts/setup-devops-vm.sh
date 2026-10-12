@@ -235,6 +235,11 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 sudo usermod -aG docker "$REAL_USER"
 sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 
+# Anti-Egress Hardening: Ensure UFW drops external routed transit traffic
+if [ -f /etc/default/ufw ]; then
+    sudo sed -i 's/DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="DROP"/' /etc/default/ufw 2>/dev/null || true
+fi
+
 # Configure permanent non-root Docker socket permissions (mode 0666 - NO 'newgrp docker' required)
 sudo mkdir -p /etc/systemd/system/docker.socket.d
 cat << "EOF_DOCKER_SOCK" | sudo tee /etc/systemd/system/docker.socket.d/override.conf >/dev/null
@@ -609,20 +614,36 @@ log_step "11/12: Installing CircleCI CLI & Runner toolchain..."
 curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/master/install.sh | sudo bash
 log_success "CircleCI CLI installed ($(circleci version))"
 
-# 12. Configure Firewall Rules (GCP "allow-devops-platform" & UFW)
-log_step "12/12: Applying automatic firewall rules ('allow-devops-platform')..."
-FIREWALL_NAME="${FIREWALL_NAME:-allow-devops-platform}"
-TARGET_TAGS="allow-devops-platform,devops-control-plane,devops-vm"
-REQUIRED_PORTS=(22 80 443 8000 8080 8081 9000 30080 30751 30752 50000)
+# 12. Configure Firewall Rules (Tiered Anti-Egress Security & UFW)
+log_step "12/12: Applying zero-trust tiered firewall rules and anti-egress protection..."
+FIREWALL_PUBLIC="allow-devops-public-web"
+FIREWALL_ADMIN="allow-devops-admin-mgmt"
+TARGET_TAGS="devops-public-web,devops-control-plane,devops-vm,http-server,https-server"
+PUBLIC_PORTS=(80 443 8000)
+ADMIN_PORTS=(22 8080 8081 9000 30080 30751 30752 50000)
 
 # Local UFW
-sudo apt-get install -y --no-install-recommends ufw >/dev/null 2>&1 || true
-for p in "${REQUIRED_PORTS[@]}"; do
-    sudo ufw allow "${p}/tcp" comment "DevOps ${p}" >/dev/null 2>&1 || true
+sudo apt-get install -y --no-install-recommends ufw fail2ban iproute2 >/dev/null 2>&1 || true
+sudo systemctl enable fail2ban >/dev/null 2>&1 || true
+sudo systemctl restart fail2ban >/dev/null 2>&1 || true
+
+for p in "${PUBLIC_PORTS[@]}"; do
+    sudo ufw allow "${p}/tcp" comment "Public Web ${p}" >/dev/null 2>&1 || true
+done
+for p in "${ADMIN_PORTS[@]}"; do
+    sudo ufw allow "${p}/tcp" comment "DevOps Admin ${p}" >/dev/null 2>&1 || true
 done
 sudo ufw allow 30000:32767/tcp comment "Kubernetes NodePort Range" >/dev/null 2>&1 || true
 if sudo ufw status 2>/dev/null | grep -q "Status: active"; then
     sudo ufw reload >/dev/null 2>&1 || true
+fi
+
+# Kernel Traffic Control (tc) Egress Ceiling (25 Mbps)
+WAN_IF=$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' || echo "eth0")
+if [ -n "$WAN_IF" ] && command -v tc >/dev/null 2>&1; then
+    sudo tc qdisc del dev "$WAN_IF" root 2>/dev/null || true
+    sudo tc qdisc add dev "$WAN_IF" root tbf rate 25mbit burst 64kbit latency 400ms 2>/dev/null || true
+    log_success "Egress bandwidth limit (25 Mbps) applied to ${WAN_IF}."
 fi
 
 # GCP Metadata detection and tagging
@@ -635,14 +656,21 @@ if [ -n "$GCP_VM_NAME" ]; then
     GCP_PROJECT=$(curl -s -f -m 2 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
     if command -v gcloud >/dev/null 2>&1; then
         gcloud compute instances add-tags "$GCP_VM_NAME" --zone="$GCP_ZONE" --tags="$TARGET_TAGS" --quiet >/dev/null 2>&1 || true
-        PORT_SPEC="tcp:22,tcp:80,tcp:443,tcp:8000,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
-        if gcloud compute firewall-rules describe "$FIREWALL_NAME" ${GCP_PROJECT:+--project="$GCP_PROJECT"} >/dev/null 2>&1; then
-            gcloud compute firewall-rules update "$FIREWALL_NAME" ${GCP_PROJECT:+--project="$GCP_PROJECT"} --allow="$PORT_SPEC" --target-tags="$TARGET_TAGS" --quiet >/dev/null 2>&1 || true
-        fi
+        
+        # Public Web Tier
+        gcloud compute firewall-rules update "$FIREWALL_PUBLIC" ${GCP_PROJECT:+--project="$GCP_PROJECT"} --allow="tcp:80,tcp:443,tcp:8000" --source-ranges="0.0.0.0/0" --quiet >/dev/null 2>&1 || \
+        gcloud compute firewall-rules create "$FIREWALL_PUBLIC" ${GCP_PROJECT:+--project="$GCP_PROJECT"} --allow="tcp:80,tcp:443,tcp:8000" --source-ranges="0.0.0.0/0" --target-tags="devops-public-web" --quiet >/dev/null 2>&1 || true
+
+        # Protected Admin Tier (GCP IAP)
+        gcloud compute firewall-rules update "$FIREWALL_ADMIN" ${GCP_PROJECT:+--project="$GCP_PROJECT"} --allow="tcp:22,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000" --source-ranges="35.235.240.0/20" --quiet >/dev/null 2>&1 || \
+        gcloud compute firewall-rules create "$FIREWALL_ADMIN" ${GCP_PROJECT:+--project="$GCP_PROJECT"} --allow="tcp:22,tcp:8080,tcp:8081,tcp:9000,tcp:30080,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000" --source-ranges="35.235.240.0/20" --target-tags="devops-control-plane,devops-vm" --quiet >/dev/null 2>&1 || true
+        
+        # Remove legacy open rule
+        gcloud compute firewall-rules delete "allow-devops-platform" ${GCP_PROJECT:+--project="$GCP_PROJECT"} --quiet >/dev/null 2>&1 || true
     fi
-    log_success "GCP tags '${TARGET_TAGS}' and firewall rule '${FIREWALL_NAME}' configured!"
+    log_success "Tiered GCP firewall rules configured with IAP restriction!"
 else
-    log_success "Local UFW firewall rules configured!"
+    log_success "Local UFW firewall rules and Egress Guard configured!"
 fi
 
 # 13. System RAM Cleanup, Bloatware Purge & Performance Tuning

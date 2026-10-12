@@ -1,0 +1,71 @@
+# ==============================================================================
+# ANTI-EGRESS NETWORK SECURITY POLICY FOR SMART MANUFACTURING PLATFORM
+# Restricts pod egress to prevent unauthorized external data transfers & bot abuse
+# ==============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-egress-guard
+  namespace: default
+spec:
+  podSelector: {} # Applies to all pods in the default namespace
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow all intra-cluster ingress traffic
+  - from:
+    - namespaceSelector: {}
+  egress:
+  # 1. Allow intra-cluster pod-to-pod & service communication
+  - to:
+    - namespaceSelector: {}
+  # 2. Allow CoreDNS cluster name resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # 3. Allow secure HTTPS outbound for container pulls & secure APIs (Port 443)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: logging-egress-guard
+  namespace: logging
+spec:
+  podSelector: {} # Restricts Elasticsearch, Logstash, Kibana, Filebeat
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow internal cluster services to ship logs to Logstash / ES
+  - from:
+    - namespaceSelector: {}
+  egress:
+  # Intra-cluster logging pipeline only (No direct internet egress needed)
+  - to:
+    - namespaceSelector: {}
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
