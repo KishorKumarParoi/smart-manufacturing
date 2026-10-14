@@ -154,15 +154,27 @@ if [ -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" ]; then
     kubectl apply -n smart-manufacturing -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" 2>/dev/null || true
 fi
 
+echo -e "${YELLOW}[*] Waiting for Production Smart Manufacturing Pod readiness...${NC}"
+kubectl rollout status deployment/prod-smart-manufacturing-api -n smart-manufacturing --timeout=180s || true
+
 echo -e "\n${BOLD}================ GKE PRODUCTION CLUSTER STATUS ================${NC}"
 kubectl get nodes -o wide
 echo ""
 kubectl get pods -n smart-manufacturing -o wide
+echo ""
+kubectl get svc -n smart-manufacturing -o wide
 echo -e "${BOLD}===============================================================${NC}\n"
+
+INGRESS_IP=$(kubectl get ingress prod-smart-manufacturing-ingress -n smart-manufacturing -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
 
 echo -e "${GREEN}${BOLD}🎉 GKE PRODUCTION DEPLOYMENT FINISHED!${NC}"
 echo -e "  - Cluster Name:       ${BOLD}${CLUSTER_NAME}${NC}"
 echo -e "  - Region/Zone:        ${BOLD}${GCP_ZONE}${NC}"
 echo -e "  - K8s Version:        ${BOLD}$(kubectl version --short 2>/dev/null || kubectl version | head -n 1)${NC}"
 echo -e "  - Security:           ${GREEN}${BOLD}Master Authorized Networks Active (Anti-Bot Zero-Trust)${NC}"
-echo -e "  - GPU Node Pool:      ${GREEN}${BOLD}Auto-scales 0 to 2 nodes (Zero cost when idle)${NC}\n"
+echo -e "  - GPU Node Pool:      ${GREEN}${BOLD}Auto-scales 0 to 2 nodes (Zero cost when idle)${NC}"
+if [ -n "$INGRESS_IP" ]; then
+    echo -e "  - Ingress Endpoint:   ${CYAN}${BOLD}http://${INGRESS_IP}${NC}"
+fi
+echo -e "  - Port-Forward:       ${BOLD}kubectl port-forward svc/prod-smart-manufacturing-service 8000:80 -n smart-manufacturing${NC}"
+echo -e "  - Alt NodePort:       ${BOLD}:30080 (Mapped to :5000 in cluster)${NC}\n"

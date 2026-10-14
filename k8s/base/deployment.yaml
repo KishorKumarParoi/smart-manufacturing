@@ -23,18 +23,24 @@ spec:
         tier: inference-engine
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
+        prometheus.io/port: "5000"
         prometheus.io/path: "/metrics"
     spec:
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
+            - weight: 80
               preference:
                 matchExpressions:
                   - key: accelerator
                     operator: In
                     values: ["nvidia-gpu", "nvidia-tesla-t4", "nvidia-a10g"]
+            - weight: 20
+              preference:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values: ["system-pool", "production-core-pool"]
       tolerations:
         - key: "nvidia.com/gpu"
           operator: "Exists"
@@ -45,43 +51,52 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: inference-api
-          image: ghcr.io/kishorkumarparoi/smart-manufacturing-api:v1.0.0
+          image: kishorkumarparoi/smart-manufacturing:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 8000
+              containerPort: 5000
           env:
             - name: APP_ENV
               value: "production"
-            - name: DEVICE
-              value: "cuda"
+            - name: PORT
+              value: "5000"
+            - name: PYTHONUNBUFFERED
+              value: "1"
             - name: PRIMARY_CLOUD
-              value: "aws"
-            - name: SECONDARY_CLOUD
               value: "gcp"
-            - name: MLFLOW_TRACKING_URI
-              value: "http://mlflow.smart-manufacturing.svc.cluster.local:5000"
+            - name: SECONDARY_CLOUD
+              value: "aws"
+            - name: REDIS_HOST
+              value: "redis-service.smart-manufacturing.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
           resources:
             requests:
-              cpu: "1000m"
-              memory: "2Gi"
+              cpu: "300m"
+              memory: "512Mi"
             limits:
-              cpu: "4000m"
-              memory: "8Gi"
-              nvidia.com/gpu: "1"
-          livenessProbe:
+              cpu: "1500m"
+              memory: "2Gi"
+          startupProbe:
             httpGet:
-              path: /health
-              port: 8000
-            initialDelaySeconds: 20
-            periodSeconds: 15
-            timeoutSeconds: 5
-            failureThreshold: 3
+              path: /api/health
+              port: 5000
+            failureThreshold: 18
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /ready
-              port: 8000
+              port: 5000
             initialDelaySeconds: 10
-            periodSeconds: 5
-            timeoutSeconds: 3
-            failureThreshold: 2
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
