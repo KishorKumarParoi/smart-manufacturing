@@ -127,7 +127,7 @@ flowchart TD
 | **Continuous Integration** | Jenkins, Groovy, SonarQube, Nexus 3, Trivy | Automated testing, static analysis, quality gates, CVE scanning, artifact registry |
 | **Continuous Delivery** | ArgoCD, Kustomize, GitOps | Declarative multi-cloud reconciliation, automated sync, zero-downtime rolling updates |
 | **Container Engine** | Docker, Astral `uv`, Containerd | Fast layer-cached builds, ultra-fast Python dependency installs |
-| **Kubernetes Orchestration**| Kubernetes v1.30, Minikube, AWS EKS, GCP GKE | Pod autoscaling (HPA), startup/readiness/liveness probes, resource quotas |
+| **Kubernetes Orchestration**| Kubernetes v1.30, Google Kubernetes Engine (GKE), AWS EKS | Pod autoscaling (HPA), startup/readiness/liveness probes, resource quotas |
 | **Distributed Logging** | Filebeat (DaemonSet), Logstash, Elasticsearch, Kibana | Node-level log harvesting, Kubernetes metadata enrichment, centralized search |
 | **Metrics & Observability** | Prometheus, Grafana | Scrapes `/metrics`, inference latency histograms, error rate monitors |
 | **Infrastructure as Code** | Terraform (~5.30), AWS & GCP Providers | Modular IaC for VPCs, EKS, GKE, GPU node pools, and DNS failover policies |
@@ -304,7 +304,7 @@ make compose-down
 ---
 
 ### Option 2: Production GKE Deployment (Google Kubernetes Engine)
-For enterprise production environments, the platform deploys natively to Google Kubernetes Engine (GKE) instead of Minikube:
+For enterprise production environments, the platform deploys natively to Google Kubernetes Engine (GKE):
 
 ```bash
 # 1. One-click enterprise GKE deployment (VPC-native, Workload Identity, GPU auto-scale 0-2):

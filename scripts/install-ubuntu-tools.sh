@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ALL-IN-ONE ENTERPRISE DEVOPS & AI OPERATIONS PLATFORM (UBUNTU / DEBIAN / GCP)
-# Tools: Docker | Minikube | Kubectl | ArgoCD | SonarQube | Nexus 3 | Trivy | 
+# Tools: Docker | Google Kubernetes Engine (GKE) | Kubectl | ArgoCD | SonarQube | Nexus 3 | Trivy | 
 #        Prometheus | Grafana | Redis | Elasticsearch | Logstash | Kibana | Filebeat | Jenkins
 # Capabilities:
 #   1. Autonomous GCP VM Provisioning (e2-standard-8, 100GB disk, network tags)
@@ -22,8 +22,8 @@ header() {
     cat << "EOF"
 ====================================================================================================
   ENTERPRISE DEVOPS & INDUSTRIAL AI OPERATIONS PLATFORM AUTOMATED SETUP
-  Docker | Minikube | Kubectl | ArgoCD | SonarQube | Nexus 3 | Trivy | Prometheus | Grafana |
-  Redis | Elasticsearch | Logstash | Kibana | Filebeat | Jenkins
+  Docker | Google Kubernetes Engine (GKE) | Kubectl | ArgoCD | SonarQube | Nexus 3 | Trivy |
+  Prometheus | Grafana | Redis | Elasticsearch | Logstash | Kibana | Filebeat | Jenkins
 ====================================================================================================
 EOF
     echo -e "${NC}"
@@ -47,7 +47,6 @@ show_help() {
     echo "  --nexus-password <pass>       Set Sonatype Nexus admin password (default: admin123)"
     echo "  --nexus-repo <repo>           Set Nexus raw release repo name (default: smart-manufacturing-releases)"
     echo "  --optimize, --cleanup         Clear RAM caches, vacuum logs, and tune kernel"
-    echo "  --fix-minikube                Reset stale Minikube Docker network bridge"
     echo "  --help, -h                    Show this help message"
 }
 
@@ -78,9 +77,6 @@ for arg in "$@"; do
             ;;
         --optimize|--clean|--cleanup|--speedup|-o)
             RUN_MODE="optimize"
-            ;;
-        --fix-minikube|--repair-minikube)
-            RUN_MODE="fix-minikube"
             ;;
         --help|-h)
             show_help
@@ -444,44 +440,8 @@ EOF_LIMITS
     echo -e "${GREEN}[✓] System RAM, kernel network parameters, and anti-egress protection active.${NC}"
 }
 
-# Minikube Self-Healing & Network Recovery Function
-fix_and_start_minikube() {
-    echo -e "\n${YELLOW}${BOLD}[*] Auto-Healing Minikube Cluster & Docker Network IPAM...${NC}"
-    if systemctl is-active --quiet k3s 2>/dev/null; then
-        systemctl stop k3s 2>/dev/null || true
-        systemctl disable k3s 2>/dev/null || true
-    fi
-
-    sudo -u "$REAL_USER" minikube delete --all --purge >/dev/null 2>&1 || true
-    docker rm -f minikube 2>/dev/null || true
-    docker network rm minikube 2>/dev/null || true
-    docker network prune -f >/dev/null 2>&1 || true
-
-    systemctl restart docker.socket docker >/dev/null 2>&1 || true
-    chmod 666 /var/run/docker.sock /run/docker.sock 2>/dev/null || true
-    if command -v setfacl >/dev/null 2>&1; then
-        setfacl -m u:"$REAL_USER":rw /var/run/docker.sock 2>/dev/null || true
-        setfacl -m u:"$REAL_USER":rw /run/docker.sock 2>/dev/null || true
-    fi
-    sleep 2
-
-    echo -e "${YELLOW}[*] Starting clean Minikube cluster using Docker driver...${NC}"
-    if sudo -u "$REAL_USER" minikube start --driver=docker; then
-        echo -e "${GREEN}[✓] Minikube cluster recovered and running!${NC}"
-    else
-        sudo -u "$REAL_USER" minikube delete --all --purge >/dev/null 2>&1 || true
-        docker rm -f minikube 2>/dev/null || true
-        docker network rm minikube 2>/dev/null || true
-        sudo -u "$REAL_USER" minikube start --driver=docker --network=minikube-net
-        echo -e "${GREEN}[✓] Minikube cluster recovered with clean network!${NC}"
-    fi
-}
-
 if [ "$RUN_MODE" = "optimize" ]; then
     optimize_system_and_ram
-    exit 0
-elif [ "$RUN_MODE" = "fix-minikube" ]; then
-    fix_and_start_minikube
     exit 0
 fi
 
@@ -633,38 +593,25 @@ fi
 echo -e "${GREEN}[✓] Git & GitHub credentials configured.${NC}"
 
 # ==============================================================================
-# 5. Kubernetes Cluster Setup (Production GKE or Local Minikube)
+# 5. Enterprise Google Kubernetes Engine (GKE) Cluster Setup & Authentication
 # ==============================================================================
 GKE_CLUSTER="${GKE_CLUSTER_NAME:-smart-mfg-prod-gke}"
-if command -v gcloud >/dev/null 2>&1 && gcloud container clusters describe "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
-    echo -e "\n${CYAN}[5/11] Connecting to Production Google Kubernetes Engine (GKE) Cluster...${NC}"
+echo -e "\n${CYAN}[5/11] Connecting & Authenticating to Enterprise GKE Cluster ('${GKE_CLUSTER}')...${NC}"
+
+if command -v gcloud >/dev/null 2>&1; then
+    # Check if cluster exists; if not, invoke the enterprise GKE orchestrator
+    if ! gcloud container clusters describe "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Production GKE cluster '${GKE_CLUSTER}' not found. Provisioning cluster...${NC}"
+        bash "${SCRIPT_DIR}/setup-gke-production.sh"
+    fi
+
+    echo -e "${YELLOW}[*] Retrieving GKE cluster credentials for kubectl...${NC}"
     gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT"
     sudo -u "$REAL_USER" gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
     echo -e "${GREEN}[✓] Successfully authenticated to GKE: ${NC}$(kubectl config current-context 2>/dev/null)"
 else
-    echo -e "\n${CYAN}[5/11] Checking Minikube installation & cluster state...${NC}"
-    if ! command -v minikube >/dev/null 2>&1; then
-        curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-        install minikube-linux-amd64 /usr/local/bin/minikube
-        rm -f minikube-linux-amd64
-    fi
-
-    MINIKUBE_STATUS=$(sudo -u "$REAL_USER" minikube status --format='{{.Host}}' 2>/dev/null || echo "Stopped")
-    if [ "$MINIKUBE_STATUS" = "Running" ] && sudo -u "$REAL_USER" kubectl get nodes >/dev/null 2>&1; then
-        echo -e "${GREEN}[✓] Minikube cluster is already RUNNING!${NC}"
-    else
-        if systemctl is-active --quiet k3s 2>/dev/null; then
-            systemctl stop k3s 2>/dev/null || true
-            systemctl disable k3s 2>/dev/null || true
-        fi
-
-        echo -e "${YELLOW}[*] Starting Minikube cluster using Docker driver...${NC}"
-        if sudo -u "$REAL_USER" minikube start --driver=docker; then
-            echo -e "${GREEN}[✓] Minikube cluster started successfully!${NC}"
-        else
-            fix_and_start_minikube
-        fi
-    fi
+    echo -e "${RED}[ERROR] 'gcloud' CLI is required for GKE production authentication.${NC}"
+    exit 1
 fi
 
 mkdir -p /root/.kube "$USER_HOME/.kube"
@@ -673,8 +620,8 @@ cp /root/.kube/config "$USER_HOME/.kube/config" 2>/dev/null || true
 chmod 600 /root/.kube/config "$USER_HOME/.kube/config"
 chown "$REAL_USER:$REAL_USER" "$USER_HOME/.kube/config"
 
-echo -e "${GREEN}[✓] Kubernetes Nodes:${NC}"
-kubectl get nodes
+echo -e "${GREEN}[✓] Production GKE Nodes:${NC}"
+kubectl get nodes -o wide
 
 # ==============================================================================
 # 6. ArgoCD Controller & Service (NodePort 30751)
@@ -702,7 +649,7 @@ echo -e "${GREEN}[✓] ArgoCD configured on NodePort 30751.${NC}"
 # 7. SonarQube & Sonatype Nexus 3 Platforms
 # ==============================================================================
 echo -e "\n${CYAN}[7/11] Configuring SonarQube (Port 9000) & Nexus 3 (Port 8081)...${NC}"
-docker network inspect minikube >/dev/null 2>&1 || docker network create minikube >/dev/null 2>&1 || true
+docker network inspect devops-net >/dev/null 2>&1 || docker network create devops-net >/dev/null 2>&1 || true
 
 if docker ps -q -f name=^sonarqube$ >/dev/null 2>&1 && [ -n "$(docker ps -q -f name=^sonarqube$)" ]; then
     echo -e "${GREEN}[✓] SonarQube container is already RUNNING.${NC}"
@@ -716,7 +663,7 @@ else
         -v sonarqube_extensions:/opt/sonarqube/extensions \
         -v sonarqube_logs:/opt/sonarqube/logs \
         sonarqube:community
-    docker network connect minikube sonarqube 2>/dev/null || true
+    docker network connect devops-net sonarqube 2>/dev/null || true
 fi
 
 if ! command -v sonar-scanner >/dev/null 2>&1; then
@@ -738,7 +685,7 @@ else
         -p 0.0.0.0:8082:8082 \
         -v nexus_data:/nexus-data \
         sonatype/nexus3:latest
-    docker network connect minikube nexus 2>/dev/null || true
+    docker network connect devops-net nexus 2>/dev/null || true
 fi
 
 for attempt in {1..20}; do
@@ -801,24 +748,34 @@ if [ -f "${WORKSPACE_ROOT}/Dockerfile" ]; then
     echo -e "${YELLOW}[*] Compiling root Dockerfile via native Docker daemon...${NC}"
     docker build -t "kishorkumarparoi/smart-manufacturing:latest" \
         -f "${WORKSPACE_ROOT}/Dockerfile" "${WORKSPACE_ROOT}"
-    echo -e "${GREEN}[✓] Native container built. Loading into Minikube image cache...${NC}"
-    minikube image load "kishorkumarparoi/smart-manufacturing:latest" || true
-elif [ -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" ]; then
-    docker build -t "kishorkumarparoi/smart-manufacturing:latest" \
-        -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" "${WORKSPACE_ROOT}"
-    minikube image load "kishorkumarparoi/smart-manufacturing:latest" || true
+    echo -e "${GREEN}[✓] Native Linux amd64 container built successfully.${NC}"
 fi
 
-if [ -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" ]; then
+# Deploy Production Smart Manufacturing Workload to GKE Cluster
+if [ -d "${WORKSPACE_ROOT}/k8s/overlays/production" ]; then
+    echo -e "${YELLOW}[*] Applying Production Kustomize manifests to GKE...${NC}"
+    kubectl apply -k "${WORKSPACE_ROOT}/k8s/overlays/production"
+    echo -e "${GREEN}[✓] Production GKE manifests applied.${NC}"
+    echo -e "${YELLOW}[*] Waiting for Production Smart Manufacturing Pod readiness in GKE...${NC}"
+    kubectl rollout status deployment/prod-smart-manufacturing-api -n smart-manufacturing --timeout=180s || true
+elif [ -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" ]; then
     kubectl apply -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" -f "${WORKSPACE_ROOT}/manifests/service.yaml"
     echo -e "${GREEN}[✓] Smart Manufacturing Core application manifests applied.${NC}"
     echo -e "${YELLOW}[*] Waiting for Smart Manufacturing Pod readiness...${NC}"
     kubectl rollout status deployment/smart-manufacturing --timeout=120s -n default || true
 fi
 
+# Apply In-Cluster Telemetry Cache (Redis)
+if [ -d "${WORKSPACE_ROOT}/manifests/redis" ]; then
+    kubectl apply -n smart-manufacturing -f "${WORKSPACE_ROOT}/manifests/redis" 2>/dev/null || \
+    kubectl apply -n default -f "${WORKSPACE_ROOT}/manifests/redis" 2>/dev/null || true
+    echo -e "${GREEN}[✓] Redis telemetry cache manifests applied.${NC}"
+fi
+
 # Apply Anti-Egress Kubernetes NetworkPolicies
 if [ -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" ]; then
-    kubectl apply -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" 2>/dev/null || true
+    kubectl apply -n smart-manufacturing -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" 2>/dev/null || \
+    kubectl apply -n default -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" 2>/dev/null || true
     echo -e "${GREEN}[✓] Kubernetes Egress Guard NetworkPolicies applied.${NC}"
 fi
 
@@ -938,7 +895,7 @@ else
       -u root \
       -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" \
       jenkins/jenkins:lts
-    docker network connect minikube jenkins 2>/dev/null || true
+    docker network connect devops-net jenkins 2>/dev/null || true
 fi
 
 PLUGINS_TO_INSTALL=(docker-workflow docker-plugin kubernetes kubernetes-cli git workflow-aggregator pipeline-stage-view credentials-binding plain-credentials ws-cleanup github)
@@ -1018,8 +975,13 @@ setup_systemd_forward "grafana-port-forward" "Grafana Web Port Forward (3000 -> 
 setup_systemd_forward "kibana-port-forward" "Kibana Web Port Forward (5601 & 30601 -> 5601)" \
     "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/kibana 5601:5601 30601:5601 -n logging"
 
-setup_systemd_forward "smart-manufacturing-port-forward" "Smart Manufacturing Web Port Forward (8000 & 30080 -> 80)" \
-    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/smart-manufacturing-service 8000:80 30080:80 -n default"
+if kubectl get svc prod-smart-manufacturing-service -n smart-manufacturing >/dev/null 2>&1; then
+    setup_systemd_forward "smart-manufacturing-port-forward" "Smart Manufacturing Web Port Forward (8000 & 30080 -> 80)" \
+        "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/prod-smart-manufacturing-service 8000:80 30080:80 -n smart-manufacturing"
+else
+    setup_systemd_forward "smart-manufacturing-port-forward" "Smart Manufacturing Web Port Forward (8000 & 30080 -> 80)" \
+        "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/smart-manufacturing-service 8000:80 30080:80 -n default"
+fi
 
 echo -e "${GREEN}[✓] Persistent systemd port-forward daemons active (ArgoCD, Prometheus, Grafana, Kibana, Smart Mfg).${NC}"
 

@@ -19,7 +19,7 @@ for arg in "$@"; do
         --gke|--production|-p|--prod)
             USE_GKE=true
             ;;
-        --vm|--devops-vm|--minikube)
+        --vm|--devops-vm|--management-vm)
             USE_GKE=false
             ;;
         *)

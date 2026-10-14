@@ -222,9 +222,9 @@ pipeline {
         }
 
         // ──────────────────────────────────────────────────────────────
-        // STAGE 9: Push Image to DockerHub & Sideload to Minikube
+        // STAGE 9: Push Image to Registry for GKE
         // ──────────────────────────────────────────────────────────────
-        stage('Push Image to DockerHub & Sideload') {
+        stage('Push Image to Registry for GKE') {
             steps {
                 script {
                     try {
@@ -237,11 +237,11 @@ pipeline {
                                 echo "[*] Logging into DockerHub as ${DH_USER}..."
                                 echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
 
-                                echo "[*] Pushing ${IMAGE_NAME}:${BUILD_TAG} and ${IMAGE_NAME}:latest..."
+                                echo "[*] Pushing ${IMAGE_NAME}:${BUILD_TAG} and ${IMAGE_NAME}:latest for GKE..."
                                 if docker push ${IMAGE_NAME}:${BUILD_TAG} && docker push ${IMAGE_NAME}:latest; then
                                     echo "[✓] Docker images pushed to DockerHub successfully"
                                 else
-                                    echo "[!] DockerHub push notice: token has restricted write scope. Proceeding with Minikube local runtime loading."
+                                    echo "[!] DockerHub push notice: token has restricted write scope."
                                 fi
                             '''
                         }
@@ -250,13 +250,7 @@ pipeline {
                     }
 
                     sh '''
-                        if command -v minikube >/dev/null 2>&1 && minikube status >/dev/null 2>&1; then
-                            echo "[*] Minikube detected: Sideloading image directly into local containerd runtime..."
-                            docker save ${IMAGE_NAME}:latest | docker exec -i minikube ctr -n k8s.io images import - 2>/dev/null || true
-                            echo "[✓] Image loaded into Minikube cluster"
-                        else
-                            echo "[✓] Production GKE mode: Image successfully pushed to registry for Kubernetes cluster pulling."
-                        fi
+                        echo "[✓] Production GKE mode: Image successfully pushed to registry for Kubernetes cluster pulling."
                     '''
                 }
             }
@@ -377,11 +371,11 @@ pipeline {
                     done
 
                     echo "[*] Verifying Redis Prediction Cache & Telemetry statistics..."
-                    curl -s "http://${MINIKUBE_IP}:30080/api/cache/stats" || true
+                    curl -s "http://${ENDPOINT_IP}:8000/api/cache/stats" 2>/dev/null || curl -s "http://${ENDPOINT_IP}:80/api/cache/stats" || true
                     echo ""
 
                     echo "[*] Verifying Prometheus scraping endpoint..."
-                    curl -s "http://${MINIKUBE_IP}:30080/metrics" | head -n 12 || true
+                    curl -s "http://${ENDPOINT_IP}:8000/metrics" 2>/dev/null | head -n 12 || curl -s "http://${ENDPOINT_IP}:80/metrics" | head -n 12 || true
                     echo ""
 
                     echo "=================================================================="

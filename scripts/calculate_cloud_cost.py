@@ -195,7 +195,7 @@ PRESETS: Dict[str, Dict[str, Any]] = {
     },
     "devops-vm": {
         "name": "Standalone DevOps VM (Jenkins, ArgoCD, SonarQube, Nexus)",
-        "description": "1 VM (4 vCPU, 16GB RAM) running Docker, Minikube, Jenkins, ArgoCD, SonarQube & Nexus",
+        "description": "1 VM (4 vCPU, 16GB RAM) running Docker, Jenkins, ArgoCD, SonarQube & Nexus",
         "vms": 1,
         "vm_size": "xlarge",
         "k8s_clusters": 0,
