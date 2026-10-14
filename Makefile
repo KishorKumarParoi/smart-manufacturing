@@ -2,7 +2,7 @@
 # SMART MANUFACTURING MLOPS PLATFORM - WORKFLOW MAKEFILE
 # ==============================================================================
 
-.PHONY: help deploy infra ansible apps test train failover-drill compose-up compose-down compile-kubeflow clean
+.PHONY: help deploy clear infra ansible apps test train failover-drill compose-up compose-down compile-kubeflow clean
 
 help: ## Show this help menu
 	@echo "=================================================================="
@@ -12,6 +12,9 @@ help: ## Show this help menu
 
 deploy: ## One-click deployment across all layers (Infra, Ansible, GitOps, Models, Failover)
 	@./deploy.sh --all
+
+clear: ## One-click zero-cost teardown: Delete all cloud VMs, disks, static IPs, and firewalls
+	@./clear.sh
 
 infra: ## Provision AWS and GCP clusters via Terraform
 	@./deploy.sh --infra

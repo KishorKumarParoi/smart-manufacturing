@@ -303,14 +303,28 @@ make compose-down
 
 ---
 
-### Option 2: Autonomous All-In-One VM Bootstrap
-Provision the complete production platform on an Ubuntu host with one command:
+### Option 2: Autonomous One-Click Cloud Deployment & Zero-Cost Teardown
+Provision the complete production platform on a dedicated GCP Compute Engine host with one command:
 
 ```bash
-# Run on Ubuntu host (or automatically from Mac via gcloud):
-sudo bash scripts/install-ubuntu-tools.sh --provision-vm
+# One-click deployment (provisions VM, sets up tiered firewalls, bootstraps all 12 tools):
+./deploy.sh
+# or: make deploy
 ```
-*Automatically installs Docker, Minikube, Kubectl, Helm, Trivy, SonarQube, Nexus, ArgoCD, Jenkins, Redis, EFK Logging, and Prometheus with anti-egress security active.*
+
+**Zero-Cost Teardown & Permanent Deletion:**
+When you are finished practicing or testing, immediately delete all active VMs, persistent disks, reserved static IPs, and firewalls to eliminate 100% of cloud costs:
+```bash
+# Interactive teardown (verifies resources and confirms before deleting):
+./clear.sh
+# or: make clear
+
+# Instant non-interactive teardown:
+./clear.sh --force
+
+# Dry-run audit (view active cost-incurring resources without deleting):
+./clear.sh --dry-run
+```
 
 ---
 
