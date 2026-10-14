@@ -307,22 +307,34 @@ make compose-down
 Provision the complete production platform on a dedicated GCP Compute Engine host with one command:
 
 ```bash
-# One-click deployment (provisions VM, sets up tiered firewalls, bootstraps all 12 tools):
+# One-click deployment (provisions VM, sets up zero-trust anti-bot firewalls, bootstraps all 12 tools):
 ./deploy.sh
 # or: make deploy
+
+# If your Wi-Fi or public IP changes, re-whitelist your IP in 2 seconds:
+make allow-my-ip
+# or: ./scripts/allow-my-ip.sh
 ```
 
-**Zero-Cost Teardown & Permanent Deletion:**
-When you are finished practicing or testing, immediately delete all active VMs, persistent disks, reserved static IPs, and firewalls to eliminate 100% of cloud costs:
+**Zero-Cost Teardown & Permanent Deletion (VMs, GPUs, TPUs, Network):**
+When you are finished practicing or testing, immediately delete ALL active resources to eliminate 100% of cloud costs:
+* Deletes Compute VMs & GPU worker nodes
+* Deletes GKE clusters & GPU node pools
+* Deletes Google Cloud TPUs (Cloud TPU VMs & nodes)
+* Deletes all persistent disks (standard, balanced, SSD, orphaned)
+* Deletes Cloud NAT gateways, Cloud Routers, and Forwarding Rules / Load Balancers
+* Releases reserved static external IP addresses
+* Purges custom firewall rules & local Docker containers
+
 ```bash
-# Interactive teardown (verifies resources and confirms before deleting):
+# Interactive teardown (scans across all 8 tiers, displays summary, confirms before deleting):
 ./clear.sh
 # or: make clear
 
 # Instant non-interactive teardown:
 ./clear.sh --force
 
-# Dry-run audit (view active cost-incurring resources without deleting):
+# Dry-run audit (view active cost-incurring resources across all 8 tiers without deleting):
 ./clear.sh --dry-run
 ```
 

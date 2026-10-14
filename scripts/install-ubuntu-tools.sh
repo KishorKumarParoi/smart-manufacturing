@@ -205,8 +205,11 @@ provision_gcp_vm_and_bootstrap() {
         --target-tags="devops-control-plane,devops-vm" \
         --quiet >/dev/null 2>&1 || true
 
-    # Delete deprecated legacy wide-open firewall rule if present
-    gcloud compute firewall-rules delete "allow-devops-platform" --project="$GCP_PROJECT" --quiet >/dev/null 2>&1 || true
+    # Purge any legacy or wide-open rules (Guarantees 0.0.0.0/0 is never open)
+    for wide_rule in "allow-devops-platform" "default-allow-http" "default-allow-https"; do
+        gcloud compute firewall-rules delete "$wide_rule" --project="$GCP_PROJECT" --quiet >/dev/null 2>&1 || true
+    done
+    echo -e "${GREEN}[✓] Anti-Bot Protection Active: All wide-open 0.0.0.0/0 firewall rules purged.${NC}"
 
     gcloud compute instances add-tags "$VM_NAME" \
         --zone="$GCP_ZONE" \
