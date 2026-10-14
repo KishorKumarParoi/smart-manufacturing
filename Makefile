@@ -33,7 +33,7 @@ compile-kubeflow: ## Compile Kubeflow Pipelines v2 pipeline to YAML
 	@python3 kubeflow/pipeline.py
 
 failover-drill: ## Execute automated multi-cloud failover simulation
-	@./deploy.sh --failover-test
+	@bash ./scripts/test_failover.sh
 
 compose-up: ## Start local simulated multi-cloud environment with MinIO, MLflow, and APIs
 	@docker compose -f docker/docker-compose.yml up -d --build
