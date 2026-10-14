@@ -57,7 +57,7 @@ GCP_ZONE="us-central1-a"
 VM_NAME="gitops"
 MACHINE_TYPE="e2-standard-8"
 SERVICE_ACCOUNT="881665859601-compute@developer.gserviceaccount.com"
-IMAGE_FAMILY="projects/ubuntu-os-cloud/global/images/ubuntu-minimal-2604-resolute-amd64-v20260918"
+IMAGE_FAMILY="projects/ubuntu-os-cloud/global/images/ubuntu-minimal-2604-resolute-amd64-v20261009"
 DISK_SIZE="100"
 DISK_TYPE="pd-balanced"
 DISK_RESOURCE_POLICY="projects/project-53d8ce01-b0e0-4f8b-94c/regions/us-central1/resourcePolicies/default-schedule-1"
@@ -218,9 +218,9 @@ provision_gcp_vm_and_bootstrap() {
 
     # 5. Synchronize repository files to VM (excluding large local virtualenvs)
     echo -e "${YELLOW}[*] Synchronizing Smart Manufacturing repository & manifests to VM...${NC}"
-    tar -czf - -C "$WORKSPACE_ROOT" --exclude='.venv' --exclude='65 - *' . | \
+    COPYFILE_DISABLE=1 tar --format ustar -czf - -C "$WORKSPACE_ROOT" --exclude='.venv' --exclude='65 - *' . | \
         gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-        --command="mkdir -p ~/smart-manufacturing && tar -xzf - -C ~/smart-manufacturing" --quiet
+        --command="mkdir -p ~/smart-manufacturing && tar --warning=no-unknown-keyword -xzf - -C ~/smart-manufacturing 2>/dev/null || tar -xzf - -C ~/smart-manufacturing" --quiet
 
     # 6. Execute On-Host Bootstrap
     echo -e "${YELLOW}[*] Executing full DevOps & Industrial AI platform setup on remote VM...${NC}"
