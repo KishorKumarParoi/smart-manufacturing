@@ -10,11 +10,12 @@ def client():
 
 
 def test_health_check(client):
-    response = client.get("/api/health")
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["status"] == "healthy"
-    assert "Smart Manufacturing" in data["service"]
+    for endpoint in ["/api/health", "/health", "/ready"]:
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["status"] == "healthy"
+        assert "Smart Manufacturing" in data["service"]
 
 
 def test_presets_endpoint(client):

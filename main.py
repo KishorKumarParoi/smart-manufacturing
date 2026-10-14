@@ -601,6 +601,8 @@ def api_presets():
 
 
 @app.route("/api/health", methods=["GET"])
+@app.route("/health", methods=["GET"])
+@app.route("/ready", methods=["GET"])
 def health():
     clf, scl = get_artifacts()
     return (
