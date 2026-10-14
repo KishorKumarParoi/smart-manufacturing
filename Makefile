@@ -44,3 +44,12 @@ compose-down: ## Tear down local simulated environment
 clean: ## Remove temporary build and test cache artifacts
 	@rm -rf .pytest_cache .coverage coverage.xml dist build *.egg-info
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
+
+setup-devops: ## Provision & bootstrap all-in-one DevOps VM (Docker, K8s, Jenkins, SonarQube, Nexus, EFK)
+	@bash scripts/install-ubuntu-tools.sh --provision-vm
+
+egress-guard: ## Install kernel traffic control (tc) rate limiter & emergency watchdog killswitch
+	@sudo bash scripts/setup-egress-killswitch.sh
+
+cost-audit: ## Execute real-time multi-cloud financial auditor and live API spend calculator
+	@python3 scripts/calculate_cloud_cost.py --live
