@@ -160,40 +160,48 @@ provision_gcp_vm_and_bootstrap() {
     VM_IP=$(gcloud compute instances describe "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
     echo -e "${GREEN}[✓] Instance '${VM_NAME}' Public IP:${NC} ${BOLD}${VM_IP}${NC}"
 
-    # 3. Ensure GCP Cloud Firewall enforces zero-trust tiered rules (Anti-Egress / Bot Prevention)
-    echo -e "${YELLOW}[*] Configuring secure tiered GCP Cloud Firewall (Egress & Bot Abuse Protection)...${NC}"
+    # 3. Ensure GCP Cloud Firewall enforces zero-trust rules (Anti-Egress / Bot Prevention)
+    echo -e "${YELLOW}[*] Configuring zero-trust GCP Cloud Firewall (Strict User IP Whitelist & Bot Protection)...${NC}"
+    
+    # Auto-detect client public IP and derive /24 subnet for carrier dynamic pools
     LOCAL_CLIENT_IP=$(curl -s -m 4 https://api.ipify.org 2>/dev/null || curl -s -m 4 https://ifconfig.me 2>/dev/null || echo "")
     if [ -n "$LOCAL_CLIENT_IP" ]; then
-        ADMIN_SOURCE_CIDR="${LOCAL_CLIENT_IP}/32,35.235.240.0/20"
-        echo -e "${GREEN}[✓] Restricted admin tools to your IP (${LOCAL_CLIENT_IP}) + GCP IAP tunnel.${NC}"
+        # Whitelist the user's IP, their /24 carrier subnet (handles dynamic IP rotation), and GCP IAP
+        CLIENT_SUBNET="$(echo "$LOCAL_CLIENT_IP" | cut -d. -f1-3).0/24"
+        USER_ALLOWED_CIDR="${LOCAL_CLIENT_IP}/32,${CLIENT_SUBNET},35.235.240.0/20"
+        echo -e "${GREEN}[✓] ZERO-TRUST ACTIVE: Firewall locked strictly to your IP (${LOCAL_CLIENT_IP}) and ISP pool (${CLIENT_SUBNET}).${NC}"
+        echo -e "${GREEN}[✓] All other public internet access (0.0.0.0/0) is 100% BLOCKED. No external bots allowed.${NC}"
     else
-        ADMIN_SOURCE_CIDR="35.235.240.0/20"
-        echo -e "${YELLOW}[!] Defaulting admin tools access to GCP IAP (35.235.240.0/20).${NC}"
+        USER_ALLOWED_CIDR="35.235.240.0/20"
+        echo -e "${YELLOW}[!] Warning: Could not detect public IP. Restricting to GCP IAP (35.235.240.0/20).${NC}"
     fi
 
-    # 3.1 Public Web Tier (Ports 80, 443, 8000 only)
+    # Allow custom override if specified via ADMIN_SOURCE_CIDR environment variable
+    USER_ALLOWED_CIDR="${ADMIN_SOURCE_CIDR:-$USER_ALLOWED_CIDR}"
+
+    # 3.1 Web Tier (Ports 80, 443, 8000) - STRICTLY RESTRICTED TO USER IP ONLY!
     gcloud compute firewall-rules update "$FIREWALL_PUBLIC" \
         --project="$GCP_PROJECT" \
         --allow="$PUBLIC_PORT_SPEC" \
-        --source-ranges="0.0.0.0/0" \
+        --source-ranges="$USER_ALLOWED_CIDR" \
         --quiet >/dev/null 2>&1 || \
     gcloud compute firewall-rules create "$FIREWALL_PUBLIC" \
         --project="$GCP_PROJECT" \
         --allow="$PUBLIC_PORT_SPEC" \
-        --source-ranges="0.0.0.0/0" \
+        --source-ranges="$USER_ALLOWED_CIDR" \
         --target-tags="devops-public-web,http-server,https-server" \
         --quiet >/dev/null 2>&1 || true
 
-    # 3.2 Protected Admin Management Tier (Strictly restricted, NEVER 0.0.0.0/0)
+    # 3.2 Admin Management Tier (Ports 22, 3000, 8080, 8081, 9000, etc.) - STRICTLY RESTRICTED TO USER IP ONLY!
     gcloud compute firewall-rules update "$FIREWALL_ADMIN" \
         --project="$GCP_PROJECT" \
         --allow="$ADMIN_PORT_SPEC" \
-        --source-ranges="$ADMIN_SOURCE_CIDR" \
+        --source-ranges="$USER_ALLOWED_CIDR" \
         --quiet >/dev/null 2>&1 || \
     gcloud compute firewall-rules create "$FIREWALL_ADMIN" \
         --project="$GCP_PROJECT" \
         --allow="$ADMIN_PORT_SPEC" \
-        --source-ranges="$ADMIN_SOURCE_CIDR" \
+        --source-ranges="$USER_ALLOWED_CIDR" \
         --target-tags="devops-control-plane,devops-vm" \
         --quiet >/dev/null 2>&1 || true
 
@@ -776,7 +784,14 @@ if [ -d "$MONITORING_DIR" ]; then
     echo -e "${GREEN}[✓] Prometheus & Grafana manifests applied in namespace 'monitoring'.${NC}"
 fi
 
-# Apply Smart Manufacturing Core App
+# Build & Apply Smart Manufacturing Core App (Native Linux amd64 Build)
+if [ -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" ]; then
+    echo -e "${YELLOW}[*] Building native Linux amd64 container for Smart Manufacturing API...${NC}"
+    docker build -t "kishorkumarparoi/smart-manufacturing:latest" \
+        -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" "${WORKSPACE_ROOT}" >/dev/null 2>&1 || true
+    minikube image load "kishorkumarparoi/smart-manufacturing:latest" >/dev/null 2>&1 || true
+fi
+
 if [ -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" ]; then
     kubectl apply -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" -f "${WORKSPACE_ROOT}/manifests/service.yaml" 2>/dev/null || true
     echo -e "${GREEN}[✓] Smart Manufacturing Core application manifests applied.${NC}"

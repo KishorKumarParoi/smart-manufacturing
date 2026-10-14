@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application source code
 COPY src/ /app/src/
-COPY models_checkpoints/ /app/models_checkpoints/ 2>/dev/null || true
+RUN mkdir -p /app/models_checkpoints
 
 # Security: Create non-root app user
 RUN useradd -m -u 1000 appuser && \
