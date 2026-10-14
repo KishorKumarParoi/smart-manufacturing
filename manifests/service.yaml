@@ -13,3 +13,7 @@ spec:
       port: 80
       targetPort: 5000
       nodePort: 30080
+    - name: http-8000
+      port: 8000
+      targetPort: 5000
+      nodePort: 30081

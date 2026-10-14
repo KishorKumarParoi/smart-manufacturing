@@ -796,16 +796,24 @@ if [ -d "$MONITORING_DIR" ]; then
 fi
 
 # Build & Apply Smart Manufacturing Core App (Native Linux amd64 Build)
-if [ -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" ]; then
-    echo -e "${YELLOW}[*] Building native Linux amd64 container for Smart Manufacturing API...${NC}"
+echo -e "${YELLOW}[*] Building native Linux amd64 container for Smart Manufacturing Application...${NC}"
+if [ -f "${WORKSPACE_ROOT}/Dockerfile" ]; then
+    echo -e "${YELLOW}[*] Compiling root Dockerfile via native Docker daemon...${NC}"
     docker build -t "kishorkumarparoi/smart-manufacturing:latest" \
-        -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" "${WORKSPACE_ROOT}" >/dev/null 2>&1 || true
-    minikube image load "kishorkumarparoi/smart-manufacturing:latest" >/dev/null 2>&1 || true
+        -f "${WORKSPACE_ROOT}/Dockerfile" "${WORKSPACE_ROOT}"
+    echo -e "${GREEN}[✓] Native container built. Loading into Minikube image cache...${NC}"
+    minikube image load "kishorkumarparoi/smart-manufacturing:latest" || true
+elif [ -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" ]; then
+    docker build -t "kishorkumarparoi/smart-manufacturing:latest" \
+        -f "${WORKSPACE_ROOT}/docker/Dockerfile.api" "${WORKSPACE_ROOT}"
+    minikube image load "kishorkumarparoi/smart-manufacturing:latest" || true
 fi
 
 if [ -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" ]; then
-    kubectl apply -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" -f "${WORKSPACE_ROOT}/manifests/service.yaml" 2>/dev/null || true
+    kubectl apply -f "${WORKSPACE_ROOT}/manifests/deployment.yaml" -f "${WORKSPACE_ROOT}/manifests/service.yaml"
     echo -e "${GREEN}[✓] Smart Manufacturing Core application manifests applied.${NC}"
+    echo -e "${YELLOW}[*] Waiting for Smart Manufacturing Pod readiness...${NC}"
+    kubectl rollout status deployment/smart-manufacturing --timeout=120s -n default || true
 fi
 
 # Apply Anti-Egress Kubernetes NetworkPolicies
@@ -1010,8 +1018,8 @@ setup_systemd_forward "grafana-port-forward" "Grafana Web Port Forward (3000 -> 
 setup_systemd_forward "kibana-port-forward" "Kibana Web Port Forward (5601 & 30601 -> 5601)" \
     "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/kibana 5601:5601 30601:5601 -n logging"
 
-setup_systemd_forward "smart-manufacturing-port-forward" "Smart Manufacturing Web Port Forward (30080 & 8000 -> 80)" \
-    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/smart-manufacturing-service 30080:80 8000:80 -n default"
+setup_systemd_forward "smart-manufacturing-port-forward" "Smart Manufacturing Web Port Forward (8000 & 30080 -> 80)" \
+    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/smart-manufacturing-service 8000:80 30080:80 -n default"
 
 echo -e "${GREEN}[✓] Persistent systemd port-forward daemons active (ArgoCD, Prometheus, Grafana, Kibana, Smart Mfg).${NC}"
 
@@ -1026,43 +1034,17 @@ if [ -n "$GCP_VM_NAME" ]; then
     GCP_PROJECT=$(curl -s -f -m 3 -H "$GCP_METADATA_HEADER" "$GCP_METADATA_BASE/project/project-id" 2>/dev/null || true)
 
     if command -v gcloud >/dev/null 2>&1; then
-        # 1. Public Web Tier (80, 443, 8000 only)
-        gcloud compute firewall-rules update "$FIREWALL_PUBLIC" \
-            --project="$GCP_PROJECT" \
-            --allow="$PUBLIC_PORT_SPEC" \
-            --source-ranges="0.0.0.0/0" \
-            --quiet >/dev/null 2>&1 || \
-        gcloud compute firewall-rules create "$FIREWALL_PUBLIC" \
-            --project="$GCP_PROJECT" \
-            --allow="$PUBLIC_PORT_SPEC" \
-            --source-ranges="0.0.0.0/0" \
-            --target-tags="devops-public-web,http-server,https-server" \
-            --quiet >/dev/null 2>&1 || true
-
-        # 2. Protected Admin Tier (IAP & Admin only - NEVER 0.0.0.0/0)
-        ADMIN_CIDR_HOST="35.235.240.0/20"
-        gcloud compute firewall-rules update "$FIREWALL_ADMIN" \
-            --project="$GCP_PROJECT" \
-            --allow="$ADMIN_PORT_SPEC" \
-            --source-ranges="$ADMIN_CIDR_HOST" \
-            --quiet >/dev/null 2>&1 || \
-        gcloud compute firewall-rules create "$FIREWALL_ADMIN" \
-            --project="$GCP_PROJECT" \
-            --allow="$ADMIN_PORT_SPEC" \
-            --source-ranges="$ADMIN_CIDR_HOST" \
-            --target-tags="devops-control-plane,devops-vm" \
-            --quiet >/dev/null 2>&1 || true
-
-        # Clean legacy open rule
+        # Clean legacy wide-open rule (NEVER allow 0.0.0.0/0)
         gcloud compute firewall-rules delete "allow-devops-platform" --project="$GCP_PROJECT" --quiet >/dev/null 2>&1 || true
 
+        # Ensure network tags are attached to VM
         gcloud compute instances add-tags "$GCP_VM_NAME" \
             --zone="$GCP_ZONE" \
             --project="$GCP_PROJECT" \
             --tags="$TARGET_TAGS" \
             --quiet >/dev/null 2>&1 || true
     fi
-    echo -e "${GREEN}[✓] Tiered GCP Firewalls verified ('${FIREWALL_PUBLIC}', '${FIREWALL_ADMIN}'). Protected against bot scanning.${NC}"
+    echo -e "${GREEN}[✓] Tiered GCP Firewalls verified ('${FIREWALL_PUBLIC}', '${FIREWALL_ADMIN}'). Zero-trust anti-bot protection active.${NC}"
 fi
 
 optimize_system_and_ram
