@@ -2,7 +2,7 @@
 # SMART MANUFACTURING MLOPS PLATFORM - WORKFLOW MAKEFILE
 # ==============================================================================
 
-.PHONY: help deploy clear allow-my-ip infra ansible apps test train failover-drill compose-up compose-down compile-kubeflow clean
+.PHONY: help deploy deploy-gke clear allow-my-ip infra ansible apps test train failover-drill compose-up compose-down compile-kubeflow clean
 
 help: ## Show this help menu
 	@echo "=================================================================="
@@ -10,8 +10,11 @@ help: ## Show this help menu
 	@echo "=================================================================="
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-deploy: ## One-click deployment across all layers (Infra, Ansible, GitOps, Models, Failover)
-	@./deploy.sh --all
+deploy: ## One-click deployment (Auto-routes to GKE on production branch, VM on main)
+	@./deploy.sh
+
+deploy-gke: ## Provision and deploy enterprise production stack to GKE (VPC-native, GPU auto-scale)
+	@./deploy.sh --gke
 
 clear: ## One-click zero-cost teardown: Delete all cloud VMs, disks, static IPs, and firewalls
 	@./clear.sh

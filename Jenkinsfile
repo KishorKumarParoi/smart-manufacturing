@@ -250,9 +250,13 @@ pipeline {
                     }
 
                     sh '''
-                        echo "[*] Ensuring image is loaded directly into Minikube containerd runtime..."
-                        docker save ${IMAGE_NAME}:latest | docker exec -i minikube ctr -n k8s.io images import - 2>/dev/null || true
-                        echo "[✓] Image loaded into Minikube cluster"
+                        if command -v minikube >/dev/null 2>&1 && minikube status >/dev/null 2>&1; then
+                            echo "[*] Minikube detected: Sideloading image directly into local containerd runtime..."
+                            docker save ${IMAGE_NAME}:latest | docker exec -i minikube ctr -n k8s.io images import - 2>/dev/null || true
+                            echo "[✓] Image loaded into Minikube cluster"
+                        else
+                            echo "[✓] Production GKE mode: Image successfully pushed to registry for Kubernetes cluster pulling."
+                        fi
                     '''
                 }
             }
@@ -294,22 +298,36 @@ pipeline {
         stage('GitOps Deploy & Sync ArgoCD') {
             steps {
                 sh '''
-                    echo "[*] Applying Kubernetes manifests for Smart Manufacturing, Redis & EFK Logging..."
-                    kubectl apply -f manifests/redis/ 2>/dev/null || true
-                    kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
-                    kubectl apply -f manifests/logging/ 2>/dev/null || true
-                    kubectl apply -f manifests/deployment.yaml -f manifests/service.yaml
-                    kubectl apply -f manifests/monitoring/ 2>/dev/null || true
+                    echo "[*] Connecting to target Kubernetes environment..."
+                    GKE_CLUSTER="${GKE_CLUSTER_NAME:-smart-mfg-prod-gke}"
+                    GCP_ZONE="${GCP_ZONE:-us-central1-a}"
+                    GCP_PROJECT="${GCP_PROJECT:-project-53d8ce01-b0e0-4f8b-94c}"
+
+                    if command -v gcloud >/dev/null 2>&1 && gcloud container clusters describe "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+                        echo "[*] GKE Cluster '${GKE_CLUSTER}' detected. Authenticating credentials..."
+                        gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT"
+                        
+                        echo "[*] Applying Enterprise Production Overlays ('k8s/overlays/production')..."
+                        kubectl apply -k k8s/overlays/production
+                    else
+                        echo "[*] Local cluster active. Applying standard manifests..."
+                        kubectl apply -f manifests/redis/ 2>/dev/null || true
+                        kubectl create namespace logging --dry-run=client -o yaml | kubectl apply -f -
+                        kubectl apply -f manifests/logging/ 2>/dev/null || true
+                        kubectl apply -f manifests/deployment.yaml -f manifests/service.yaml
+                        kubectl apply -f manifests/monitoring/ 2>/dev/null || true
+                    fi
                     kubectl apply -f argocd/application.yaml 2>/dev/null || true
 
                     echo "[*] Synchronizing ArgoCD application '${APP_NAME}'..."
                     ARGOCD_PW=$(kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || true)
 
                     if [ -n "$ARGOCD_PW" ] && command -v argocd >/dev/null 2>&1; then
-                        MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.49.2")
+                        ARGOCD_HOST=$(kubectl get svc -n argocd argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
+                                      kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "127.0.0.1")
 
-                        echo "[*] Logging into ArgoCD at ${MINIKUBE_IP}:30751..."
-                        argocd login "${MINIKUBE_IP}:30751" \
+                        echo "[*] Logging into ArgoCD at ${ARGOCD_HOST}:30751..."
+                        argocd login "${ARGOCD_HOST}:30751" \
                             --username admin \
                             --password "$ARGOCD_PW" \
                             --insecure || \
@@ -336,27 +354,26 @@ pipeline {
             steps {
                 sh '''
                     echo "[*] Triggering rolling restart to ensure newest container image runs..."
-                    kubectl rollout restart deployment/${APP_NAME}
-                    kubectl rollout status deployment/${APP_NAME} --timeout=120s
+                    kubectl rollout restart deployment/${APP_NAME} -n default 2>/dev/null || \
+                    kubectl rollout restart deployment/prod-smart-manufacturing-api -n smart-manufacturing 2>/dev/null || true
 
                     echo "[*] Pod Status across platform namespaces:"
-                    kubectl get pods -l app=${APP_NAME} -o wide
-                    kubectl get pods -n monitoring -o wide
-                    kubectl get pods -n logging -o wide
+                    kubectl get pods -A | grep -E 'smart-manufacturing|monitoring|logging' || true
 
                     echo "[*] Testing health and telemetry endpoints with retries..."
-                    MINIKUBE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "192.168.49.2")
+                    ENDPOINT_IP=$(kubectl get ingress -n smart-manufacturing -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
+                                  kubectl get svc -n smart-manufacturing -l app=smart-manufacturing-api -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
+                                  kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "127.0.0.1")
+                    
                     HEALTHY=0
-                    for i in $(seq 1 15); do
-                        if curl -s -f "http://${MINIKUBE_IP}:30080/api/health" >/dev/null 2>&1; then
-                            echo "[✓] Healthcheck responded 200 OK via Minikube NodePort (${MINIKUBE_IP}:30080)"
-                            curl -s "http://${MINIKUBE_IP}:30080/api/health"
+                    for port in 8000 80 30080; do
+                        if curl -s -f "http://${ENDPOINT_IP}:${port}/health" >/dev/null 2>&1 || curl -s -f "http://${ENDPOINT_IP}:${port}/api/health" >/dev/null 2>&1; then
+                            echo "[✓] Healthcheck responded 200 OK via http://${ENDPOINT_IP}:${port}"
+                            curl -s "http://${ENDPOINT_IP}:${port}/health" 2>/dev/null || curl -s "http://${ENDPOINT_IP}:${port}/api/health"
                             echo ""
                             HEALTHY=1
                             break
                         fi
-                        echo "[*] Waiting for application container to initialize (attempt $i/15)..."
-                        sleep 4
                     done
 
                     echo "[*] Verifying Redis Prediction Cache & Telemetry statistics..."

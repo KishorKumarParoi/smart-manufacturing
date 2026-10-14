@@ -633,29 +633,37 @@ fi
 echo -e "${GREEN}[✓] Git & GitHub credentials configured.${NC}"
 
 # ==============================================================================
-# 5. Minikube Cluster (Containerd & Docker Bridge)
+# 5. Kubernetes Cluster Setup (Production GKE or Local Minikube)
 # ==============================================================================
-echo -e "\n${CYAN}[5/11] Checking Minikube installation & cluster state...${NC}"
-if ! command -v minikube >/dev/null 2>&1; then
-    curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-    install minikube-linux-amd64 /usr/local/bin/minikube
-    rm -f minikube-linux-amd64
-fi
-
-MINIKUBE_STATUS=$(sudo -u "$REAL_USER" minikube status --format='{{.Host}}' 2>/dev/null || echo "Stopped")
-if [ "$MINIKUBE_STATUS" = "Running" ] && sudo -u "$REAL_USER" kubectl get nodes >/dev/null 2>&1; then
-    echo -e "${GREEN}[✓] Minikube cluster is already RUNNING!${NC}"
+GKE_CLUSTER="${GKE_CLUSTER_NAME:-smart-mfg-prod-gke}"
+if command -v gcloud >/dev/null 2>&1 && gcloud container clusters describe "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+    echo -e "\n${CYAN}[5/11] Connecting to Production Google Kubernetes Engine (GKE) Cluster...${NC}"
+    gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT"
+    sudo -u "$REAL_USER" gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
+    echo -e "${GREEN}[✓] Successfully authenticated to GKE: ${NC}$(kubectl config current-context 2>/dev/null)"
 else
-    if systemctl is-active --quiet k3s 2>/dev/null; then
-        systemctl stop k3s 2>/dev/null || true
-        systemctl disable k3s 2>/dev/null || true
+    echo -e "\n${CYAN}[5/11] Checking Minikube installation & cluster state...${NC}"
+    if ! command -v minikube >/dev/null 2>&1; then
+        curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        install minikube-linux-amd64 /usr/local/bin/minikube
+        rm -f minikube-linux-amd64
     fi
 
-    echo -e "${YELLOW}[*] Starting Minikube cluster using Docker driver...${NC}"
-    if sudo -u "$REAL_USER" minikube start --driver=docker; then
-        echo -e "${GREEN}[✓] Minikube cluster started successfully!${NC}"
+    MINIKUBE_STATUS=$(sudo -u "$REAL_USER" minikube status --format='{{.Host}}' 2>/dev/null || echo "Stopped")
+    if [ "$MINIKUBE_STATUS" = "Running" ] && sudo -u "$REAL_USER" kubectl get nodes >/dev/null 2>&1; then
+        echo -e "${GREEN}[✓] Minikube cluster is already RUNNING!${NC}"
     else
-        fix_and_start_minikube
+        if systemctl is-active --quiet k3s 2>/dev/null; then
+            systemctl stop k3s 2>/dev/null || true
+            systemctl disable k3s 2>/dev/null || true
+        fi
+
+        echo -e "${YELLOW}[*] Starting Minikube cluster using Docker driver...${NC}"
+        if sudo -u "$REAL_USER" minikube start --driver=docker; then
+            echo -e "${GREEN}[✓] Minikube cluster started successfully!${NC}"
+        else
+            fix_and_start_minikube
+        fi
     fi
 fi
 

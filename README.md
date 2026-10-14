@@ -303,17 +303,33 @@ make compose-down
 
 ---
 
-### Option 2: Autonomous One-Click Cloud Deployment & Zero-Cost Teardown
-Provision the complete production platform on a dedicated GCP Compute Engine host with one command:
+### Option 2: Production GKE Deployment (Google Kubernetes Engine)
+For enterprise production environments, the platform deploys natively to Google Kubernetes Engine (GKE) instead of Minikube:
 
 ```bash
-# One-click deployment (provisions VM, sets up zero-trust anti-bot firewalls, bootstraps all 12 tools):
-./deploy.sh
-# or: make deploy
+# 1. One-click enterprise GKE deployment (VPC-native, Workload Identity, GPU auto-scale 0-2):
+./deploy.sh --gke
+# or: make deploy-gke
+# (Note: On the 'production' branch, simply running './deploy.sh' defaults to GKE)
 
-# If your Wi-Fi or public IP changes, re-whitelist your IP in 2 seconds:
+# 2. Re-whitelist your IP/subnet if your location changes (anti-bot protection):
 make allow-my-ip
 # or: ./scripts/allow-my-ip.sh
+```
+
+**Enterprise GKE Highlights:**
+* **VPC-Native Routing**: Secondary alias IP ranges for high-throughput pod and service networking.
+* **Master Authorized Networks**: Control plane API strictly whitelisted to your IP/subnet (`203.31.169.0/24`) and GCP IAP (`35.235.240.0/20`), completely denying access to automated external bots.
+* **Auto-Scaling GPU Pool (Zero Idle Cost)**: GPU worker pool (`n1-standard-4` with NVIDIA Tesla T4) automatically scales between **0 and 2 nodes** so you pay **$0.00** when no inference jobs are running.
+* **Cloud Native GitOps (ArgoCD)**: Automated synchronization from the `production` branch via [`k8s/overlays/production/`](file:///Users/kishorkumarparoi/Desktop/smart_manufacturing/k8s/overlays/production/).
+
+---
+
+### Option 3: Management CI/CD Controller VM (Jenkins, SonarQube, Nexus)
+To run a dedicated management VM running the CI/CD controller toolchain connected to GKE:
+
+```bash
+./deploy.sh --vm
 ```
 
 **Zero-Cost Teardown & Permanent Deletion (VMs, GPUs, TPUs, Network):**
