@@ -15,7 +15,7 @@ check_tool() {
     local tool=$1
     local name=$2
     if command -v "$tool" >/dev/null 2>&1; then
-        echo -e "${GREEN}[✓] $name is installed:$(NC) $(which $tool)"
+        echo -e "${GREEN}[✓] $name is installed:${NC} $(which $tool)"
     else
         echo -e "${RED}[✗] $name is NOT installed.${NC}"
     fi
@@ -32,7 +32,10 @@ check_tool "gcloud" "Google Cloud SDK"
 check_tool "gh" "GitHub CLI"
 check_tool "make" "Make"
 
-echo -e "\n${YELLOW}[*] Checking PyTorch & GPU compute support...${NC}"
-python3 -c "import torch; print(f'PyTorch: {torch.__version__} | CUDA Available: {torch.cuda.is_available()} | MPS Available: {torch.backends.mps.is_available()}')" 2>/dev/null || echo "[!] PyTorch not yet installed in active python interpreter"
+PYTHON_BIN="python3"
+if [ -f ".venv/bin/python3" ]; then
+    PYTHON_BIN=".venv/bin/python3"
+fi
+$PYTHON_BIN -c "import torch; print(f'PyTorch: {torch.__version__} | CUDA Available: {torch.cuda.is_available()} | MPS Available: {torch.backends.mps.is_available()}')" 2>/dev/null || echo "[!] PyTorch not yet installed in active python interpreter"
 
 echo -e "\n${GREEN}[✓] Environment check completed!${NC}"

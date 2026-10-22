@@ -28,7 +28,10 @@ else
     echo -e "${YELLOW}[*] Secondary standby verified.${NC}"
 fi
 
-echo -e "\n${YELLOW}[Phase 3] Executing Health Probe & Route53 / DNS Switchover Logic...${NC}"
-python3 -m src.failover.health_probe --primary "$PRIMARY_URL" --secondary "$SECONDARY_URL" --once
+PYTHON_BIN="python3"
+if [ -f ".venv/bin/python3" ]; then
+    PYTHON_BIN=".venv/bin/python3"
+fi
+$PYTHON_BIN -m src.failover.health_probe --primary "$PRIMARY_URL" --secondary "$SECONDARY_URL" --once
 
 echo -e "\n${GREEN}[✓] Failover drill completed successfully!${NC}"

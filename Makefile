@@ -31,15 +31,18 @@ ansible: ## Run Ansible GPU node & cluster bootstrap playbooks
 apps: ## Deploy ArgoCD GitOps apps and Kubernetes overlays
 	@./deploy.sh --apps
 
+PYTHON ?= $(shell if [ -f .venv/bin/python3 ]; then echo .venv/bin/python3; else echo python3; fi)
+PYTEST ?= $(shell if [ -f .venv/bin/pytest ]; then echo .venv/bin/pytest; else echo pytest; fi)
+
 test: ## Run unit tests, API tests, and failover logic tests
-	@pytest tests/ -v --cov=src --cov-report=term-missing
+	@$(PYTEST) tests/ -v --cov=src --cov-report=term-missing
 
 train: ## Run local/GPU model training and MLflow tracking
-	@python3 -m src.training.train_sensor --epochs 10
-	@python3 -m src.training.train_vision --epochs 5
+	@$(PYTHON) -m src.training.train_sensor --epochs 10
+	@$(PYTHON) -m src.training.train_vision --epochs 5
 
 compile-kubeflow: ## Compile Kubeflow Pipelines v2 pipeline to YAML
-	@python3 kubeflow/pipeline.py
+	@$(PYTHON) kubeflow/pipeline.py
 
 failover-drill: ## Execute automated multi-cloud failover simulation
 	@bash ./scripts/test_failover.sh
@@ -61,4 +64,4 @@ egress-guard: ## Install kernel traffic control (tc) rate limiter & emergency wa
 	@sudo bash scripts/setup-egress-killswitch.sh
 
 cost-audit: ## Execute real-time multi-cloud financial auditor and live API spend calculator
-	@python3 scripts/calculate_cloud_cost.py --live
+	@$(PYTHON) scripts/calculate_cloud_cost.py --live
