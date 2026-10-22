@@ -1,7 +1,109 @@
-version: '3.8'
-
 services:
-  # 1. MinIO (S3-compatible local artifact store for MLflow)
+  # 1. Next.js 15+ Industrial Cockpit & Operator Dashboard
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: smart-mfg-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_URL=http://gateway-go:8085
+      - PORT=3000
+    depends_on:
+      - gateway-go
+    restart: unless-stopped
+
+  # 2. Go Cloud-Native Gateway & Multi-Cloud Health Controller
+  gateway-go:
+    build:
+      context: ../services/telemetry-gateway-go
+      dockerfile: Dockerfile
+    container_name: smart-mfg-gateway-go
+    ports:
+      - "8085:8085"
+    environment:
+      - PORT=8085
+      - PRIMARY_API_URL=http://api-primary:8000
+      - SECONDARY_API_URL=http://api-secondary:8000
+      - EDGE_INGEST_URL=http://ingest-rust:8082
+    depends_on:
+      - api-primary
+      - api-secondary
+      - ingest-rust
+    restart: unless-stopped
+
+  # 3. Rust Edge Ingestion Service (Low-Latency SIMD Ingestion & Pre-filter)
+  ingest-rust:
+    build:
+      context: ../services/edge-ingestion-rust
+      dockerfile: Dockerfile
+    container_name: smart-mfg-ingest-rust
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RUST_LOG=info
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # 4. Redis 7.2 In-Memory Telemetry Buffer & Prediction Cache
+  redis:
+    image: redis:7.2-alpine
+    container_name: smart-mfg-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # 5. Primary AI Inference Engine (PyTorch Autoencoder + CNN, AWS us-east-1)
+  api-primary:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: smart-mfg-api-aws-primary
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: staging
+      PRIMARY_CLOUD: aws
+      CURRENT_CLOUD: aws
+      CURRENT_REGION: us-east-1
+      DEVICE: cpu
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - redis
+      - mlflow
+    restart: unless-stopped
+
+  # 6. Standby AI Inference Engine (PyTorch Autoencoder + CNN, GCP us-central1)
+  api-secondary:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    container_name: smart-mfg-api-gcp-failover
+    ports:
+      - "8001:8000"
+    environment:
+      APP_ENV: staging
+      PRIMARY_CLOUD: aws
+      CURRENT_CLOUD: gcp
+      CURRENT_REGION: us-central1
+      DEVICE: cpu
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - redis
+      - mlflow
+    restart: unless-stopped
+
+  # 7. MinIO (S3-compatible local artifact store for MLflow)
   minio:
     image: minio/minio:latest
     container_name: smart-mfg-minio
@@ -14,8 +116,9 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
+    restart: unless-stopped
 
-  # 2. MLflow Tracking Server
+  # 8. MLflow Model Registry & Experiment Tracking
   mlflow:
     build:
       context: ..
@@ -33,56 +136,7 @@ services:
       - minio
     volumes:
       - mlflow_data:/mlflow
-
-  # 3. Primary Inference Cluster (Simulating AWS us-east-1)
-  api-primary:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.api
-    container_name: smart-mfg-api-aws-primary
-    ports:
-      - "8000:8000"
-    environment:
-      APP_ENV: staging
-      PRIMARY_CLOUD: aws
-      CURRENT_CLOUD: aws
-      CURRENT_REGION: us-east-1
-      DEVICE: cpu
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-    depends_on:
-      - mlflow
-
-  # 4. Secondary Failover Inference Cluster (Simulating GCP us-central1)
-  api-secondary:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.api
-    container_name: smart-mfg-api-gcp-failover
-    ports:
-      - "8001:8000"
-    environment:
-      APP_ENV: staging
-      PRIMARY_CLOUD: aws
-      CURRENT_CLOUD: gcp
-      CURRENT_REGION: us-central1
-      DEVICE: cpu
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-    depends_on:
-      - mlflow
-
-  # 5. Multi-Cloud Health Probe & Failover Daemon
-  failover-prober:
-    image: python:3.11-slim
-    container_name: smart-mfg-failover-prober
-    volumes:
-      - ../src:/app/src
-    working_dir: /app
-    command: >
-      sh -c "pip install requests &&
-             python -m src.failover.health_probe --primary http://api-primary:8000/health --secondary http://api-secondary:8000/health"
-    depends_on:
-      - api-primary
-      - api-secondary
+    restart: unless-stopped
 
 volumes:
   minio_data:

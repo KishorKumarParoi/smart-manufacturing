@@ -44,3 +44,15 @@ src/artifacts/
 1. *
 logs*
 65 - *
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Rust
+**/target/
+**/*.rs.bk

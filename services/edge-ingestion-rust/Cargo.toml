@@ -1,0 +1,19 @@
+[package]
+name = "edge-ingestion-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4.9"
+actix-cors = "0.7"
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+chrono = { version = "0.4", features = ["serde"] }
+env_logger = "0.11"
+log = "0.4"
+
+[[bin]]
+name = "edge_ingest"
+path = "src/main.rs"

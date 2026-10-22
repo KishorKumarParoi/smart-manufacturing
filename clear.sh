@@ -172,6 +172,10 @@ else
     pkill -f "python.*application.py" 2>/dev/null || true
     pkill -f "uvicorn.*src.serving.app:app" 2>/dev/null || true
     pkill -f "python.*src.failover.health_probe" 2>/dev/null || true
+    pkill -f "edge_ingest" 2>/dev/null || true
+    pkill -f "gateway-go" 2>/dev/null || true
+    pkill -f "node.*server.js" 2>/dev/null || true
+    pkill -f "next-server" 2>/dev/null || true
     pkill -f "setup-egress-killswitch" 2>/dev/null || true
 
     # Stop and disable systemd port-forward and watchdog services

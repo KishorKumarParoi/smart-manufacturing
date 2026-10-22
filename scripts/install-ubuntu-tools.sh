@@ -65,7 +65,7 @@ TARGET_TAGS="http-server,https-server,lb-health-check,devops-public-web,devops-c
 FIREWALL_PUBLIC="allow-devops-public-web"
 FIREWALL_ADMIN="allow-devops-admin-mgmt"
 PUBLIC_PORT_SPEC="tcp:80,tcp:443,tcp:8000"
-ADMIN_PORT_SPEC="tcp:22,tcp:3000,tcp:5000,tcp:5601,tcp:8080,tcp:8081,tcp:8082,tcp:9000,tcp:9090,tcp:30080,tcp:30090,tcp:30300,tcp:30601,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
+ADMIN_PORT_SPEC="tcp:22,tcp:3000,tcp:3001,tcp:5000,tcp:5601,tcp:8080,tcp:8081,tcp:8082,tcp:8085,tcp:9000,tcp:9090,tcp:30080,tcp:30090,tcp:30300,tcp:30601,tcp:30751,tcp:30752,tcp:30000-32767,tcp:50000"
 # NOTE: Redis (6379) and Elasticsearch (9200) are internal-only and NEVER exposed to external firewall rules!
 
 # Check if running in VM Provisioning mode (e.g. from local Mac or workstation)
@@ -453,7 +453,7 @@ echo -e "${YELLOW}[*] SonarQube token:${NC} ${BOLD}${SONARQUBE_TOKEN:0:8}...${NC
 echo -e "${YELLOW}[*] Nexus repository:${NC} ${BOLD}${NEXUS_REPO}${NC}"
 
 # Required Ports for Enterprise DevOps & Monitoring Stack
-REQUIRED_PORTS=(80 443 8000 22 3000 5000 5601 8080 8081 8082 9000 9090 30080 30090 30300 30601 30751 30752 50000)
+REQUIRED_PORTS=(80 443 8000 22 3000 3001 5000 5601 8080 8081 8082 8085 9000 9090 30080 30090 30300 30601 30751 30752 50000)
 
 # ==============================================================================
 # 1. Base Packages & Fast Python Manager (uv)
@@ -815,6 +815,59 @@ if [ -f "${WORKSPACE_ROOT}/manifests/network-policy-egress-guard.yaml" ]; then
 fi
 
 # ==============================================================================
+# 9b. Deploy Polyglot Microservices (Rust Ingestor + Go Gateway + Next.js Cockpit)
+# ==============================================================================
+echo -e "\n${CYAN}[*] Deploying Polyglot Microservices (Rust + Go + Next.js)...${NC}"
+
+# 1. Rust Edge Ingestion Service (Port 8082)
+if [ -d "${WORKSPACE_ROOT}/services/edge-ingestion-rust" ]; then
+    echo -e "${YELLOW}[*] Compiling & launching Rust Edge Ingestion Service (:8082)...${NC}"
+    docker rm -f smart-mfg-ingest-rust >/dev/null 2>&1 || true
+    docker build -t "smart-mfg-ingest-rust:latest" "${WORKSPACE_ROOT}/services/edge-ingestion-rust"
+    docker run -d --name smart-mfg-ingest-rust \
+        --restart always \
+        -p 0.0.0.0:8082:8082 \
+        -e PORT=8082 \
+        -e REDIS_HOST=127.0.0.1 \
+        -e REDIS_PORT=6379 \
+        smart-mfg-ingest-rust:latest
+    docker network connect devops-net smart-mfg-ingest-rust 2>/dev/null || true
+    echo -e "${GREEN}[✓] Rust Edge Ingestion Service active on port 8082.${NC}"
+fi
+
+# 2. Go Cloud-Native Gateway & Health Controller (Port 8085)
+if [ -d "${WORKSPACE_ROOT}/services/telemetry-gateway-go" ]; then
+    echo -e "${YELLOW}[*] Compiling & launching Go Cloud-Native Gateway (:8085)...${NC}"
+    docker rm -f smart-mfg-gateway-go >/dev/null 2>&1 || true
+    docker build -t "smart-mfg-gateway-go:latest" "${WORKSPACE_ROOT}/services/telemetry-gateway-go"
+    docker run -d --name smart-mfg-gateway-go \
+        --restart always \
+        -p 0.0.0.0:8085:8085 \
+        -e PORT=8085 \
+        -e PRIMARY_API_URL=http://127.0.0.1:8000 \
+        -e SECONDARY_API_URL=http://127.0.0.1:8001 \
+        -e EDGE_INGEST_URL=http://127.0.0.1:8082 \
+        smart-mfg-gateway-go:latest
+    docker network connect devops-net smart-mfg-gateway-go 2>/dev/null || true
+    echo -e "${GREEN}[✓] Go Telemetry Gateway active on port 8085.${NC}"
+fi
+
+# 3. Next.js 15 Industrial Operations Cockpit (Port 3000)
+if [ -d "${WORKSPACE_ROOT}/frontend" ]; then
+    echo -e "${YELLOW}[*] Compiling & launching Next.js 15 Industrial Cockpit (:3000)...${NC}"
+    docker rm -f smart-mfg-frontend >/dev/null 2>&1 || true
+    docker build -t "smart-mfg-frontend:latest" "${WORKSPACE_ROOT}/frontend"
+    docker run -d --name smart-mfg-frontend \
+        --restart always \
+        -p 0.0.0.0:3000:3000 \
+        -e GATEWAY_URL=http://127.0.0.1:8085 \
+        -e PORT=3000 \
+        smart-mfg-frontend:latest
+    docker network connect devops-net smart-mfg-frontend 2>/dev/null || true
+    echo -e "${GREEN}[✓] Next.js 15 Industrial Cockpit active on port 3000.${NC}"
+fi
+
+# ==============================================================================
 # 10. Jenkins CI/CD Controller with Embedded Toolchain
 # ==============================================================================
 echo -e "\n${CYAN}[10/11] Configuring Jenkins CI/CD Controller & Integrations...${NC}"
@@ -1004,8 +1057,8 @@ setup_systemd_forward "argocd-port-forward" "ArgoCD Web Port Forward (30751 -> 8
 setup_systemd_forward "prometheus-port-forward" "Prometheus Web Port Forward (9090 -> 9090)" \
     "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/prometheus-service 9090:9090 -n monitoring"
 
-setup_systemd_forward "grafana-port-forward" "Grafana Web Port Forward (3000 -> 3000)" \
-    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/grafana-service 3000:3000 -n monitoring"
+setup_systemd_forward "grafana-port-forward" "Grafana Web Port Forward (3001 -> 3000)" \
+    "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/grafana-service 3001:3000 -n monitoring"
 
 setup_systemd_forward "kibana-port-forward" "Kibana Web Port Forward (5601 & 30601 -> 5601)" \
     "/usr/local/bin/kubectl port-forward --address 0.0.0.0 service/kibana 5601:5601 30601:5601 -n logging"
@@ -1052,18 +1105,21 @@ optimize_system_and_ram
 EXTERNAL_IP=$(curl -s -4 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 
 echo -e "\n${GREEN}${BOLD}====================================================================================================${NC}"
-echo -e "${GREEN}${BOLD} 🎉 ENTERPRISE INDUSTRIAL AI & DEVOPS PLATFORM SETUP COMPLETED SUCCESSFULLY!                        ${NC}"
+echo -e "${GREEN}${BOLD} 🎉 ENTERPRISE POLYGLOT INDUSTRIAL AI & DEVOPS PLATFORM DEPLOYED SUCCESSFULLY!              ${NC}"
 echo -e "${GREEN}${BOLD}====================================================================================================${NC}"
-echo -e "  🌐 ${BOLD}Smart Manufacturing App:${NC} http://${EXTERNAL_IP}:8000 (Alt NodePort: :30080)"
-echo -e "  🛠️ ${BOLD}Jenkins CI/CD Dashboard:${NC} http://${EXTERNAL_IP}:8080 (User: ${GREEN}${JENKINS_ADMIN_USER}${NC} / Pass: ${GREEN}${JENKINS_ADMIN_PASSWORD}${NC})"
-echo -e "  🔍 ${BOLD}SonarQube Code Quality:${NC}  http://${EXTERNAL_IP}:9000 (Admin Token: ${GREEN}${SONARQUBE_TOKEN:0:12}...${NC})"
-echo -e "  📦 ${BOLD}Sonatype Nexus 3 Repo:${NC}   http://${EXTERNAL_IP}:8081 (User: ${GREEN}admin${NC} / Pass: ${GREEN}${NEXUS_ADMIN_PASSWORD}${NC})"
-echo -e "  📊 ${BOLD}Prometheus Metrics:${NC}      http://${EXTERNAL_IP}:9090 (NodePort: :30090)"
-echo -e "  📈 ${BOLD}Grafana AI Dashboards:${NC}   http://${EXTERNAL_IP}:3000 (User: ${GREEN}admin${NC} / Pass: ${GREEN}admin123${NC})"
-echo -e "  🔭 ${BOLD}Kibana Log Analytics:${NC}    http://${EXTERNAL_IP}:5601 (NodePort: :30601)"
-echo -e "  🚀 ${BOLD}ArgoCD GitOps Server:${NC}    http://${EXTERNAL_IP}:30751 (User: ${GREEN}admin${NC} / Pass: ${GREEN}${ARGOCD_PASSWORD:-admin}${NC})"
-echo -e "  ⚡ ${BOLD}Redis Cache & Telemetry:${NC} Active in K8s (redis-service:6379, fast inference cache enabled)"
-echo -e "  🗄️ ${BOLD}Elasticsearch & Logstash:${NC}Active in K8s (elasticsearch:9200, logstash:5044, Daily indices enabled)"
-echo -e "  🛡️ ${BOLD}Trivy Vulnerability Scanner:${NC} Installed on host & inside Jenkins container (/usr/local/bin/trivy)"
-echo -e "  ⚡ ${BOLD}Astral uv Python Manager:${NC}    Installed on host & inside Jenkins container (/usr/local/bin/uv)"
+echo -e "  🖥️  ${BOLD}Next.js 15 Operations Cockpit:${NC} http://${EXTERNAL_IP}:3000 (Interactive Dashboard & Oscilloscope)"
+echo -e "  ⚡ ${BOLD}Go Cloud-Native Gateway:${NC}       http://${EXTERNAL_IP}:8085 (Reverse Proxy, Rate Limiter & Prober)"
+echo -e "  🦀 ${BOLD}Rust Edge Ingestion Engine:${NC}    http://${EXTERNAL_IP}:8082 (Sub-ms SIMD Vibration Pre-Filter)"
+echo -e "  🐍 ${BOLD}Python PyTorch AI Core:${NC}        http://${EXTERNAL_IP}:8000 (Alt NodePort: :30080)"
+echo -e "  🛠️  ${BOLD}Jenkins CI/CD Dashboard:${NC}       http://${EXTERNAL_IP}:8080 (User: ${GREEN}${JENKINS_ADMIN_USER}${NC} / Pass: ${GREEN}${JENKINS_ADMIN_PASSWORD}${NC})"
+echo -e "  🔍 ${BOLD}SonarQube Code Quality:${NC}        http://${EXTERNAL_IP}:9000 (Admin Token: ${GREEN}${SONARQUBE_TOKEN:0:12}...${NC})"
+echo -e "  📦 ${BOLD}Sonatype Nexus 3 Repo:${NC}         http://${EXTERNAL_IP}:8081 (User: ${GREEN}admin${NC} / Pass: ${GREEN}${NEXUS_ADMIN_PASSWORD}${NC})"
+echo -e "  📊 ${BOLD}Prometheus Metrics:${NC}            http://${EXTERNAL_IP}:9090 (NodePort: :30090)"
+echo -e "  📈 ${BOLD}Grafana AI Dashboards:${NC}         http://${EXTERNAL_IP}:3001 (NodePort: :30300, admin / admin123)"
+echo -e "  🔭 ${BOLD}Kibana Log Analytics:${NC}          http://${EXTERNAL_IP}:5601 (NodePort: :30601)"
+echo -e "  🚀 ${BOLD}ArgoCD GitOps Server:${NC}          http://${EXTERNAL_IP}:30751 (User: ${GREEN}admin${NC} / Pass: ${GREEN}${ARGOCD_PASSWORD:-admin}${NC})"
+echo -e "  ⚡ ${BOLD}Redis Cache & Telemetry:${NC}       Active (redis:6379, fast inference cache enabled)"
+echo -e "  🗄️  ${BOLD}Elasticsearch & Logstash:${NC}      Active in K8s (elasticsearch:9200, logstash:5044)"
+echo -e "  🛡️  ${BOLD}Trivy Vulnerability Scanner:${NC}   Installed on host & inside Jenkins container (/usr/local/bin/trivy)"
+echo -e "  ⚡ ${BOLD}Astral uv Python Manager:${NC}          Installed on host & inside Jenkins container (/usr/local/bin/uv)"
 echo -e "====================================================================================================\n"

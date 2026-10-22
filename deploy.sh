@@ -151,12 +151,16 @@ elif [ "$TARGET_MODE" = "compose" ]; then
     docker compose -f "$COMPOSE_FILE" up -d --build
 
     echo -e "\n${GREEN}${BOLD}[✓] Local platform services are active:${NC}"
+    echo -e "  • Industrial Cockpit Frontend (Next.js 15):  ${BOLD}http://localhost:3000${NC}"
+    echo -e "  • Telemetry Gateway & Controller (Go):       ${BOLD}http://localhost:8085${NC}"
+    echo -e "  • Low-Latency Edge SIMD Ingestor (Rust):     ${BOLD}http://localhost:8082${NC}"
     echo -e "  • Primary AI Inference API (AWS us-east-1):   ${BOLD}http://localhost:8000${NC}"
     echo -e "  • Failover AI Inference API (GCP us-central1): ${BOLD}http://localhost:8001${NC}"
     echo -e "  • MLflow Tracking & Model Registry:          ${BOLD}http://localhost:5000${NC}"
     echo -e "  • MinIO S3 Object Storage Console:           ${BOLD}http://localhost:9001${NC} (admin / minioadminpassword)"
     echo -e "  • Health Prober & Failover Daemon:           Active in background"
-    echo -e "\n${CYAN}To view live predictions: curl -s http://localhost:8000/health | jq .${NC}"
+    echo -e "\n${CYAN}To view live frontend: open http://localhost:3000${NC}"
+    echo -e "${CYAN}To view live predictions: curl -s http://localhost:8000/health | jq .${NC}"
     echo -e "${CYAN}To teardown: ./clear.sh or make compose-down${NC}\n"
 
 # ==============================================================================
