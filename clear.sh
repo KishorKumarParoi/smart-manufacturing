@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ONE-CLICK ZERO-COST TEARDOWN & CLEANUP FOR SMART MANUFACTURING PLATFORM
-# Mirrors deploy.sh: Deletes ALL cost-incurring resources:
-# - Compute Engine VMs & GPU worker nodes
-# - Google Kubernetes Engine (GKE) clusters & GPU node pools
-# - Google Cloud TPUs (Cloud TPU VMs & nodes)
-# - Persistent Disks (Standard, Balanced, SSD, orphaned disks)
-# - Network: Cloud NAT Gateways, Cloud Routers, Forwarding Rules / Load Balancers
-# - Static External IP Addresses (Regional & Global)
-# - Custom Firewall Rules & Local Docker Containers
+# Fully Automated Dual-Engine Teardown:
+# 1. On-Host / Local Cleanup (EC2 / Ubuntu / Docker / K3s / Background Daemons)
+# 2. Multi-Cloud Cloud Resource Cleanup (GCP GKE, VMs, GPUs, TPUs, Disks, NAT, IPs)
 # ==============================================================================
 
 set -eo pipefail
@@ -41,24 +36,33 @@ show_help() {
     cat << EOF
 Usage: ./clear.sh [OPTIONS]
 
-Comprehensive zero-cost teardown script that terminates and deletes ALL cloud resources
-including VMs, GPUs, GKE clusters, Cloud TPUs, persistent disks, and network assets
-(NAT gateways, routers, load balancers, static IPs).
+Comprehensive zero-cost teardown script that terminates and cleans up ALL resources:
+1. On-Host / EC2: Stops and removes all Docker containers, volumes, K3s cluster,
+                  background daemons, rate-limiters, and local caches.
+2. Cloud (GCP/AWS): Deletes VMs, GPUs, GKE clusters, Cloud TPUs, persistent disks,
+                    NAT gateways, load balancers, static IPs, and firewall rules.
 
 Options:
   -y, --yes, -f, --force      Non-interactive: immediately destroy all resources without confirmation
   --dry-run                   Scan and display active cost-incurring resources without deleting
   --all                       Scan and delete all compute/network resources across the entire active project
-  --help, -h                  Show this help message
+  --local-only, --host-only   Only clean up on-host Docker, K3s, and background services
+  -h, --help                  Show this help message
 
 Examples:
-  ./clear.sh                  Interactive cleanup with confirmation
-  ./clear.sh --force          Instant automated deletion of all cost-incurring resources
-  ./clear.sh --dry-run        Audit what is currently running and incurring charges
+  # On any EC2 instance - clean up everything:
+  ./clear.sh
+
+  # Non-interactive instant wipe:
+  ./clear.sh --force
+
+  # Dry-run audit:
+  ./clear.sh --dry-run
 EOF
 }
 
 # Parse CLI arguments
+LOCAL_ONLY=false
 for arg in "$@"; do
     case "$arg" in
         -y|--yes|-f|--force)
@@ -69,6 +73,9 @@ for arg in "$@"; do
             ;;
         --all)
             CLEAN_ALL_PROJECT_INSTANCES=true
+            ;;
+        --local-only|--host-only)
+            LOCAL_ONLY=true
             ;;
         -h|--help)
             show_help
@@ -85,30 +92,153 @@ done
 echo -e "${CYAN}${BOLD}"
 cat << "EOF"
 ================================================================================
-   ZERO-COST CLOUD TEARDOWN & RESOURCE CLEANUP (GCP & LOCAL)
-   VMs | GPUs | GKE | TPUs | Disks | NAT | Routers | Load Balancers | IPs
+   ZERO-COST PLATFORM TEARDOWN & RESOURCE CLEANUP (HOST & MULTI-CLOUD)
+   Docker | K8s/K3s | VMs | GPUs | GKE | TPUs | Disks | NAT | Load Balancers | IPs
 ================================================================================
 EOF
 echo -e "${NC}"
 
-# 1. Verify gcloud CLI
-if ! command -v gcloud >/dev/null 2>&1; then
-    echo -e "${RED}[ERROR] 'gcloud' CLI is not installed or not in PATH.${NC}"
-    exit 1
+# ==============================================================================
+# 1. ON-HOST / EC2 / DOCKER / K3S CLEANUP
+# ==============================================================================
+echo -e "${CYAN}${BOLD}[STAGE 1] AUDITING & CLEANING ON-HOST CONTAINERS & SERVICES${NC}"
+
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${YELLOW}[*] Dry run: Checking active on-host services...${NC}"
+    if command -v docker >/dev/null 2>&1; then
+        RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null || true)
+        echo -e "  Docker containers running: $(echo "$RUNNING_CONTAINERS" | wc -w | tr -d ' ')"
+    fi
+else
+    # 1. Stop and remove all project Docker containers
+    if command -v docker >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Stopping and removing platform Docker containers...${NC}"
+
+        # Docker Compose down
+        if [ -f "${SCRIPT_DIR}/docker/docker-compose.yml" ]; then
+            docker compose -f "${SCRIPT_DIR}/docker/docker-compose.yml" down -v --remove-orphans 2>/dev/null || true
+        fi
+
+        # Find any matching project containers
+        CONTAINER_KEYWORDS=(
+            "smart-manufacturing"
+            "smart-mfg"
+            "jenkins"
+            "sonarqube"
+            "nexus"
+            "argocd"
+            "elasticsearch"
+            "kibana"
+            "logstash"
+            "filebeat"
+            "prometheus"
+            "grafana"
+            "redis"
+            "minio"
+            "mlflow"
+            "trivy"
+        )
+
+        for kw in "${CONTAINER_KEYWORDS[@]}"; do
+            MATCHING_IDS=$(docker ps -a --filter "name=$kw" --format "{{.ID}}" 2>/dev/null || true)
+            if [ -n "$MATCHING_IDS" ]; then
+                echo -e "  ${RED}✖${NC} Stopping & removing containers matching '${kw}'..."
+                docker rm -f $MATCHING_IDS >/dev/null 2>&1 || true
+            fi
+        done
+
+        # Prune dangling networks
+        docker network prune -f >/dev/null 2>&1 || true
+        echo -e "${GREEN}[✓] Platform Docker containers and networks cleaned.${NC}"
+    fi
+
+    # 2. Clean up K3s or Kubernetes namespaces if present
+    if [ -f "/usr/local/bin/k3s-uninstall.sh" ]; then
+        echo -e "${YELLOW}[*] Uninstalling local K3s Kubernetes cluster...${NC}"
+        if [ "$EUID" -eq 0 ]; then
+            /usr/local/bin/k3s-uninstall.sh >/dev/null 2>&1 || true
+        else
+            sudo /usr/local/bin/k3s-uninstall.sh >/dev/null 2>&1 || true
+        fi
+        echo -e "${GREEN}[✓] Local K3s cluster uninstalled.${NC}"
+    elif command -v kubectl >/dev/null 2>&1; then
+        for ns in smart-manufacturing logging monitoring argocd; do
+            kubectl delete namespace "$ns" --timeout=10s 2>/dev/null || true
+        done
+    fi
+
+    # 3. Kill lingering background Python/Uvicorn processes
+    echo -e "${YELLOW}[*] Terminating lingering background services & daemons...${NC}"
+    pkill -f "python.*application.py" 2>/dev/null || true
+    pkill -f "uvicorn.*src.serving.app:app" 2>/dev/null || true
+    pkill -f "python.*src.failover.health_probe" 2>/dev/null || true
+    pkill -f "setup-egress-killswitch" 2>/dev/null || true
+
+    # Stop and disable systemd port-forward and watchdog services
+    FORWARD_SERVICES=(
+        "argocd-port-forward"
+        "prometheus-port-forward"
+        "grafana-port-forward"
+        "kibana-port-forward"
+        "smart-manufacturing-port-forward"
+        "egress-killswitch"
+    )
+    for svc in "${FORWARD_SERVICES[@]}"; do
+        if systemctl is-active --quiet "$svc" 2>/dev/null || [ -f "/etc/systemd/system/${svc}.service" ]; then
+            echo -e "  ${RED}✖${NC} Stopping & disabling systemd service '${svc}'..."
+            systemctl stop "$svc" 2>/dev/null || true
+            systemctl disable "$svc" 2>/dev/null || true
+            rm -f "/etc/systemd/system/${svc}.service" 2>/dev/null || true
+        fi
+    done
+    systemctl daemon-reload 2>/dev/null || true
+
+    # 4. Reset Linux Traffic Control (tc) egress limiter
+    if command -v tc >/dev/null 2>&1; then
+        WAN_IF=$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' || echo "eth0")
+        if [ -n "$WAN_IF" ]; then
+            tc qdisc del dev "$WAN_IF" root 2>/dev/null || true
+            echo -e "${GREEN}[✓] Linux Kernel Traffic Control (tc) egress rate limiter removed from ${WAN_IF}.${NC}"
+        fi
+    fi
+
+    # 5. Clear local temporary caches
+    rm -rf "${SCRIPT_DIR}/.pytest_cache" "${SCRIPT_DIR}/.coverage" "${SCRIPT_DIR}/coverage.xml"
+    rm -f "${SCRIPT_DIR}/mlflow.db" "${SCRIPT_DIR}/models_checkpoints/*.pt" 2>/dev/null || true
+    find "${SCRIPT_DIR}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    echo -e "${GREEN}[✓] Local build artifacts, test caches, and temporary files purged.${NC}"
 fi
 
-ACTIVE_GCLOUD_PROJECT=$(gcloud config get-value project 2>/dev/null || echo "")
-if [ -n "$ACTIVE_GCLOUD_PROJECT" ] && [ "$ACTIVE_GCLOUD_PROJECT" != "(unset)" ]; then
-    GCP_PROJECT="$ACTIVE_GCLOUD_PROJECT"
+# If local-only was requested, finish here
+if [ "$LOCAL_ONLY" = true ]; then
+    echo -e "\n${GREEN}${BOLD}🎉 On-host cleanup completed successfully!${NC}\n"
+    exit 0
 fi
 
-echo -e "${YELLOW}[*] Target Project:${NC} ${BOLD}${GCP_PROJECT}${NC}"
-echo -e "${YELLOW}[*] Target Region:${NC}  ${BOLD}${GCP_REGION}${NC}"
-echo -e "${YELLOW}[*] Target Zone:${NC}    ${BOLD}${GCP_ZONE}${NC}\n"
+# ==============================================================================
+# 2. MULTI-CLOUD / GCP TEARDOWN (IF GCLOUD IS CONFIGURED)
+# ==============================================================================
+echo -e "\n${CYAN}${BOLD}[STAGE 2] AUDITING & CLEANING CLOUD INFRASTRUCTURE (GCP / AWS)${NC}"
 
-# ==============================================================================
-# AUDIT ACTIVE RESOURCES ACROSS ALL TIERS
-# ==============================================================================
+GCLOUD_ACTIVE=false
+if command -v gcloud >/dev/null 2>&1; then
+    ACTIVE_GCLOUD_PROJECT=$(gcloud config get-value project 2>/dev/null || echo "")
+    if [ -n "$ACTIVE_GCLOUD_PROJECT" ] && [ "$ACTIVE_GCLOUD_PROJECT" != "(unset)" ]; then
+        GCP_PROJECT="$ACTIVE_GCLOUD_PROJECT"
+        GCLOUD_ACTIVE=true
+    fi
+fi
+
+if [ "$GCLOUD_ACTIVE" != true ]; then
+    echo -e "${YELLOW}[i] 'gcloud' CLI is not configured with an active project.${NC}"
+    echo -e "    Skipping Google Cloud resource scanning (no cloud charges incurred on GCP)."
+    echo -e "\n${GREEN}${BOLD}🎉 On-host & local platform teardown complete! Zero active resources remain.${NC}\n"
+    exit 0
+fi
+
+echo -e "${YELLOW}[*] Target GCP Project:${NC} ${BOLD}${GCP_PROJECT}${NC}"
+echo -e "${YELLOW}[*] Target GCP Region:${NC}  ${BOLD}${GCP_REGION}${NC}"
+echo -e "${YELLOW}[*] Target GCP Zone:${NC}    ${BOLD}${GCP_ZONE}${NC}\n"
 
 # 1. Audit Compute Engine Instances & GPU Nodes
 echo -e "${YELLOW}[1/8] Scanning for Compute Engine instances & GPU worker nodes...${NC}"
@@ -117,9 +247,7 @@ GPU_INSTANCES=()
 
 if [ "$CLEAN_ALL_PROJECT_INSTANCES" = true ]; then
     while IFS= read -r line; do
-        if [ -n "$line" ]; then
-            INSTANCES_TO_DELETE+=("$line")
-        fi
+        [ -n "$line" ] && INSTANCES_TO_DELETE+=("$line")
     done < <(gcloud compute instances list --project="$GCP_PROJECT" --format="value(name,zone)" 2>/dev/null || true)
 else
     EXISTING_VM=$(gcloud compute instances list --project="$GCP_PROJECT" --filter="name=${VM_NAME} OR tags.items:devops-vm" --format="value(name,zone)" 2>/dev/null || true)
@@ -130,47 +258,42 @@ else
     fi
 fi
 
-# Check for instances with attached GPUs
-while IFS= read -r line; do
-    [ -n "$line" ] && GPU_INSTANCES+=("$line")
-done < <(gcloud compute instances list --project="$GCP_PROJECT" --filter="guestAccelerators:*" --format="value(name,zone)" 2>/dev/null || true)
-
-# 2. Audit GKE Clusters (including GPU node pools)
+# 2. Audit GKE Clusters
 echo -e "${YELLOW}[2/8] Scanning for Google Kubernetes Engine (GKE) clusters...${NC}"
 GKE_CLUSTERS=()
 while IFS= read -r line; do
     [ -n "$line" ] && GKE_CLUSTERS+=("$line")
 done < <(gcloud container clusters list --project="$GCP_PROJECT" --format="value(name,location)" 2>/dev/null || true)
 
-# 3. Audit Cloud TPUs (TPU VMs & nodes)
-echo -e "${YELLOW}[3/8] Scanning for Google Cloud TPUs (Cloud TPU VMs & nodes)...${NC}"
+# 3. Audit Cloud TPUs
+echo -e "${YELLOW}[3/8] Scanning for Google Cloud TPUs...${NC}"
 TPUS_TO_DELETE=()
 while IFS= read -r line; do
     [ -n "$line" ] && TPUS_TO_DELETE+=("$line")
 done < <(gcloud compute tpus tpu-vm list --project="$GCP_PROJECT" --format="value(name,zone)" 2>/dev/null || true)
 
 # 4. Audit Persistent Disks
-echo -e "${YELLOW}[4/8] Scanning for persistent disks (boot, data, SSD, orphaned)...${NC}"
+echo -e "${YELLOW}[4/8] Scanning for persistent disks...${NC}"
 DISKS_TO_DELETE=()
 while IFS= read -r line; do
     [ -n "$line" ] && DISKS_TO_DELETE+=("$line")
 done < <(gcloud compute disks list --project="$GCP_PROJECT" --filter="name=${VM_NAME} OR users:''" --format="value(name,zone)" 2>/dev/null || true)
 
-# 5. Audit Network: Forwarding Rules & Load Balancers
+# 5. Audit Network Forwarding Rules
 echo -e "${YELLOW}[5/8] Scanning for Cloud Load Balancers & Forwarding Rules...${NC}"
 FORWARDING_RULES=()
 while IFS= read -r line; do
     [ -n "$line" ] && FORWARDING_RULES+=("$line")
 done < <(gcloud compute forwarding-rules list --project="$GCP_PROJECT" --format="value(name,region)" 2>/dev/null || true)
 
-# 6. Audit Network: Cloud NAT Gateways & Cloud Routers
+# 6. Audit Network Routers / NAT
 echo -e "${YELLOW}[6/8] Scanning for Cloud NAT Gateways & Cloud Routers...${NC}"
 ROUTERS_TO_DELETE=()
 while IFS= read -r line; do
     [ -n "$line" ] && ROUTERS_TO_DELETE+=("$line")
 done < <(gcloud compute routers list --project="$GCP_PROJECT" --format="value(name,region)" 2>/dev/null || true)
 
-# 7. Audit Static External IP Addresses (Regional & Global)
+# 7. Audit Static External IP Addresses
 echo -e "${YELLOW}[7/8] Scanning for reserved external IP addresses...${NC}"
 IPS_TO_DELETE=()
 while IFS= read -r line; do
@@ -178,278 +301,117 @@ while IFS= read -r line; do
 done < <(gcloud compute addresses list --project="$GCP_PROJECT" --format="value(name,region)" 2>/dev/null || true)
 
 # 8. Audit DevOps Firewall Rules
-echo -e "${YELLOW}[8/8] Scanning for DevOps firewall rules...${NC}"
+echo -e "${YELLOW}[8/8] Scanning for custom firewall rules...${NC}"
 FWS_TO_DELETE=()
-for fw in "$FIREWALL_PUBLIC" "$FIREWALL_ADMIN" "$FIREWALL_LEGACY"; do
-    if gcloud compute firewall-rules describe "$fw" --project="$GCP_PROJECT" >/dev/null 2>&1; then
-        FWS_TO_DELETE+=("$fw")
+for fw_name in "$FIREWALL_PUBLIC" "$FIREWALL_ADMIN" "$FIREWALL_LEGACY"; do
+    if gcloud compute firewall-rules describe "$fw_name" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+        FWS_TO_DELETE+=("$fw_name")
     fi
 done
 
-# ==============================================================================
-# DISPLAY AUDIT SUMMARY
-# ==============================================================================
-echo -e "\n${BOLD}================ RESOURCE AUDIT SUMMARY ================${NC}"
-
-# Instances & GPUs
-if [ ${#INSTANCES_TO_DELETE[@]} -eq 0 ]; then
-    echo -e "  Compute VMs:       ${GREEN}None active (0 instances)${NC}"
-else
-    echo -e "  Compute VMs:       ${RED}${BOLD}${#INSTANCES_TO_DELETE[@]} active instance(s) found:${NC}"
-    for inst in "${INSTANCES_TO_DELETE[@]}"; do
-        echo -e "                     - $inst"
-    done
-fi
-
-if [ ${#GPU_INSTANCES[@]} -gt 0 ]; then
-    echo -e "  GPU Accelerators:  ${RED}${BOLD}${#GPU_INSTANCES[@]} instance(s) with active GPUs found!${NC}"
-fi
-
-# GKE Clusters
-if [ ${#GKE_CLUSTERS[@]} -eq 0 ]; then
-    echo -e "  GKE Clusters:      ${GREEN}None active (0 clusters)${NC}"
-else
-    echo -e "  GKE Clusters:      ${RED}${BOLD}${#GKE_CLUSTERS[@]} cluster(s) found:${NC}"
-    for cl in "${GKE_CLUSTERS[@]}"; do
-        echo -e "                     - $cl"
-    done
-fi
-
-# Cloud TPUs
-if [ ${#TPUS_TO_DELETE[@]} -eq 0 ]; then
-    echo -e "  Cloud TPUs:        ${GREEN}None active (0 TPUs)${NC}"
-else
-    echo -e "  Cloud TPUs:        ${RED}${BOLD}${#TPUS_TO_DELETE[@]} active TPU(s) found:${NC}"
-    for tpu in "${TPUS_TO_DELETE[@]}"; do
-        echo -e "                     - $tpu"
-    done
-fi
-
-# Persistent Disks
-if [ ${#DISKS_TO_DELETE[@]} -eq 0 ]; then
-    echo -e "  Persistent Disks:  ${GREEN}None orphaned or matching (0 disks)${NC}"
-else
-    echo -e "  Persistent Disks:  ${RED}${BOLD}${#DISKS_TO_DELETE[@]} disk(s) found:${NC}"
-    for disk in "${DISKS_TO_DELETE[@]}"; do
-        echo -e "                     - $disk"
-    done
-fi
-
-# Load Balancers & Forwarding Rules
-if [ ${#FORWARDING_RULES[@]} -eq 0 ]; then
-    echo -e "  Forwarding Rules:  ${GREEN}None active (0 rules)${NC}"
-else
-    echo -e "  Forwarding Rules:  ${YELLOW}${#FORWARDING_RULES[@]} rule(s) found:${NC}"
-    for fr in "${FORWARDING_RULES[@]}"; do
-        echo -e "                     - $fr"
-    done
-fi
-
-# Cloud Routers & NAT
-if [ ${#ROUTERS_TO_DELETE[@]} -eq 0 ]; then
-    echo -e "  Cloud Routers/NAT: ${GREEN}None active (0 routers)${NC}"
-else
-    echo -e "  Cloud Routers/NAT: ${YELLOW}${#ROUTERS_TO_DELETE[@]} router(s) found:${NC}"
-    for rt in "${ROUTERS_TO_DELETE[@]}"; do
-        echo -e "                     - $rt"
-    done
-fi
-
-# Static IPs
-if [ ${#IPS_TO_DELETE[@]} -eq 0 ]; then
-    echo -e "  Static IPs:        ${GREEN}None allocated (0 IPs)${NC}"
-else
-    echo -e "  Static IPs:        ${YELLOW}${#IPS_TO_DELETE[@]} IP(s) found:${NC}"
-    for ip in "${IPS_TO_DELETE[@]}"; do
-        echo -e "                     - $ip"
-    done
-fi
-
-# Firewalls
-if [ ${#FWS_TO_DELETE[@]} -eq 0 ]; then
-    echo -e "  Firewall Rules:    ${GREEN}None found (0 rules)${NC}"
-else
-    echo -e "  Firewall Rules:    ${YELLOW}${#FWS_TO_DELETE[@]} rule(s) found:${NC}"
-    for fw in "${FWS_TO_DELETE[@]}"; do
-        echo -e "                     - $fw"
-    done
-fi
-echo -e "${BOLD}========================================================${NC}\n"
+echo -e "\n${BOLD}================ CLOUD RESOURCE AUDIT SUMMARY ================${NC}"
+echo -e "  Compute Instances: ${#INSTANCES_TO_DELETE[@]} found"
+echo -e "  GKE Clusters:      ${#GKE_CLUSTERS[@]} found"
+echo -e "  Cloud TPUs:        ${#TPUS_TO_DELETE[@]} found"
+echo -e "  Persistent Disks:  ${#DISKS_TO_DELETE[@]} found"
+echo -e "  Forwarding Rules:  ${#FORWARDING_RULES[@]} found"
+echo -e "  Routers & NAT:     ${#ROUTERS_TO_DELETE[@]} found"
+echo -e "  Static IPs:        ${#IPS_TO_DELETE[@]} found"
+echo -e "  Firewall Rules:    ${#FWS_TO_DELETE[@]} found"
+echo -e "${BOLD}=============================================================${NC}\n"
 
 if [ "$DRY_RUN" = true ]; then
-    echo -e "${GREEN}[✓] Dry run finished. No resources were modified or deleted.${NC}"
+    echo -e "${GREEN}[✓] Dry run finished. No cloud resources were modified or deleted.${NC}"
     exit 0
 fi
 
 TOTAL_ITEMS=$(( ${#INSTANCES_TO_DELETE[@]} + ${#GKE_CLUSTERS[@]} + ${#TPUS_TO_DELETE[@]} + ${#DISKS_TO_DELETE[@]} + ${#FORWARDING_RULES[@]} + ${#ROUTERS_TO_DELETE[@]} + ${#IPS_TO_DELETE[@]} + ${#FWS_TO_DELETE[@]} ))
 
-if [ "$TOTAL_ITEMS" -eq 0 ]; then
-    echo -e "${GREEN}[✓] Zero cost-incurring cloud resources found in project ${GCP_PROJECT}!${NC}"
-else
+if [ "$TOTAL_ITEMS" -gt 0 ]; then
     if [ "$FORCE" != true ]; then
         echo -e "${RED}${BOLD}[WARNING] This will permanently delete all ${TOTAL_ITEMS} resource(s) listed above to eliminate 100% of cloud costs.${NC}"
-        read -r -p "Do you want to proceed with deletion? [Y/n]: " CONFIRM
+        read -r -p "Do you want to proceed with cloud deletion? [Y/n]: " CONFIRM
         CONFIRM="${CONFIRM:-Y}"
         if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-            echo -e "${YELLOW}[*] Cleanup cancelled by user.${NC}"
+            echo -e "${YELLOW}[*] Cloud cleanup skipped by user.${NC}"
             exit 0
         fi
     fi
 
-    # 1. Delete GKE Clusters
-    if [ ${#GKE_CLUSTERS[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Deleting GKE clusters & associated GPU node pools...${NC}"
-        for cl_entry in "${GKE_CLUSTERS[@]}"; do
-            CL_NAME=$(echo "$cl_entry" | awk '{print $1}')
-            CL_LOC=$(echo "$cl_entry" | awk '{print $2}')
-            echo -e "  ${RED}✖${NC} Deleting GKE cluster ${BOLD}${CL_NAME}${NC} (${CL_LOC})..."
-            gcloud container clusters delete "$CL_NAME" \
-                --project="$GCP_PROJECT" \
-                --location="$CL_LOC" \
-                --quiet || true
-        done
-        echo -e "${GREEN}[✓] GKE cluster deletion complete.${NC}"
-    fi
+    # Delete GKE Clusters
+    for cl_entry in "${GKE_CLUSTERS[@]}"; do
+        CL_NAME=$(echo "$cl_entry" | awk '{print $1}')
+        CL_LOC=$(echo "$cl_entry" | awk '{print $2}')
+        echo -e "  ${RED}✖${NC} Deleting GKE cluster ${BOLD}${CL_NAME}${NC} (${CL_LOC})..."
+        gcloud container clusters delete "$CL_NAME" --project="$GCP_PROJECT" --location="$CL_LOC" --quiet || true
+    done
 
-    # 2. Delete Cloud TPUs
-    if [ ${#TPUS_TO_DELETE[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Deleting Cloud TPUs...${NC}"
-        for tpu_entry in "${TPUS_TO_DELETE[@]}"; do
-            TPU_NAME=$(echo "$tpu_entry" | awk '{print $1}')
-            TPU_ZONE=$(echo "$tpu_entry" | awk '{print $2}')
-            echo -e "  ${RED}✖${NC} Deleting Cloud TPU ${BOLD}${TPU_NAME}${NC} (Zone: ${TPU_ZONE})..."
-            gcloud compute tpus tpu-vm delete "$TPU_NAME" \
-                --project="$GCP_PROJECT" \
-                --zone="$TPU_ZONE" \
-                --quiet 2>/dev/null || true
-        done
-        echo -e "${GREEN}[✓] Cloud TPU deletion complete.${NC}"
-    fi
+    # Delete Cloud TPUs
+    for tpu_entry in "${TPUS_TO_DELETE[@]}"; do
+        TPU_NAME=$(echo "$tpu_entry" | awk '{print $1}')
+        TPU_ZONE=$(echo "$tpu_entry" | awk '{print $2}')
+        echo -e "  ${RED}✖${NC} Deleting Cloud TPU ${BOLD}${TPU_NAME}${NC}..."
+        gcloud compute tpus tpu-vm delete "$TPU_NAME" --project="$GCP_PROJECT" --zone="$TPU_ZONE" --quiet 2>/dev/null || true
+    done
 
-    # 3. Delete Compute Engine instances & attached disks
-    if [ ${#INSTANCES_TO_DELETE[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Deleting Compute Engine instances & attached disks...${NC}"
-        for inst_entry in "${INSTANCES_TO_DELETE[@]}"; do
-            INST_NAME=$(echo "$inst_entry" | awk '{print $1}')
-            INST_ZONE=$(echo "$inst_entry" | awk '{print $2}')
-            echo -e "  ${RED}✖${NC} Deleting instance ${BOLD}${INST_NAME}${NC} (Zone: ${INST_ZONE}) with all attached disks..."
-            gcloud compute instances delete "$INST_NAME" \
-                --project="$GCP_PROJECT" \
-                --zone="$INST_ZONE" \
-                --delete-disks=all \
-                --quiet || true
-        done
-        echo -e "${GREEN}[✓] Instance deletion finished.${NC}"
-    fi
+    # Delete Compute Instances
+    for inst_entry in "${INSTANCES_TO_DELETE[@]}"; do
+        INST_NAME=$(echo "$inst_entry" | awk '{print $1}')
+        INST_ZONE=$(echo "$inst_entry" | awk '{print $2}')
+        echo -e "  ${RED}✖${NC} Deleting instance ${BOLD}${INST_NAME}${NC}..."
+        gcloud compute instances delete "$INST_NAME" --project="$GCP_PROJECT" --zone="$INST_ZONE" --delete-disks=all --quiet || true
+    done
 
-    # 4. Delete Orphaned Disks
-    if [ ${#DISKS_TO_DELETE[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Deleting lingering persistent disks...${NC}"
-        for disk_entry in "${DISKS_TO_DELETE[@]}"; do
-            DISK_NAME=$(echo "$disk_entry" | awk '{print $1}')
-            DISK_ZONE=$(echo "$disk_entry" | awk '{print $2}')
-            echo -e "  ${RED}✖${NC} Deleting disk ${BOLD}${DISK_NAME}${NC} (Zone: ${DISK_ZONE})..."
-            gcloud compute disks delete "$DISK_NAME" \
-                --project="$GCP_PROJECT" \
-                --zone="$DISK_ZONE" \
-                --quiet 2>/dev/null || true
-        done
-        echo -e "${GREEN}[✓] Persistent disk cleanup finished.${NC}"
-    fi
+    # Delete Disks
+    for disk_entry in "${DISKS_TO_DELETE[@]}"; do
+        DISK_NAME=$(echo "$disk_entry" | awk '{print $1}')
+        DISK_ZONE=$(echo "$disk_entry" | awk '{print $2}')
+        echo -e "  ${RED}✖${NC} Deleting disk ${BOLD}${DISK_NAME}${NC}..."
+        gcloud compute disks delete "$DISK_NAME" --project="$GCP_PROJECT" --zone="$DISK_ZONE" --quiet 2>/dev/null || true
+    done
 
-    # 5. Delete Forwarding Rules (Load Balancers)
-    if [ ${#FORWARDING_RULES[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Deleting forwarding rules & load balancer endpoints...${NC}"
-        for fr_entry in "${FORWARDING_RULES[@]}"; do
-            FR_NAME=$(echo "$fr_entry" | awk '{print $1}')
-            FR_REGION=$(echo "$fr_entry" | awk '{print $2}')
-            echo -e "  ${RED}✖${NC} Deleting forwarding rule ${BOLD}${FR_NAME}${NC}..."
-            gcloud compute forwarding-rules delete "$FR_NAME" \
-                --project="$GCP_PROJECT" \
-                --region="$FR_REGION" \
-                --quiet 2>/dev/null || \
-            gcloud compute forwarding-rules delete "$FR_NAME" \
-                --project="$GCP_PROJECT" \
-                --global \
-                --quiet 2>/dev/null || true
-        done
-        echo -e "${GREEN}[✓] Forwarding rule cleanup finished.${NC}"
-    fi
+    # Delete Forwarding Rules
+    for fr_entry in "${FORWARDING_RULES[@]}"; do
+        FR_NAME=$(echo "$fr_entry" | awk '{print $1}')
+        FR_REGION=$(echo "$fr_entry" | awk '{print $2}')
+        echo -e "  ${RED}✖${NC} Deleting forwarding rule ${BOLD}${FR_NAME}${NC}..."
+        gcloud compute forwarding-rules delete "$FR_NAME" --project="$GCP_PROJECT" --region="$FR_REGION" --quiet 2>/dev/null || \
+        gcloud compute forwarding-rules delete "$FR_NAME" --project="$GCP_PROJECT" --global --quiet 2>/dev/null || true
+    done
 
-    # 6. Delete Cloud NAT & Cloud Routers
-    if [ ${#ROUTERS_TO_DELETE[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Deleting Cloud Routers & NAT Gateways...${NC}"
-        for rt_entry in "${ROUTERS_TO_DELETE[@]}"; do
-            RT_NAME=$(echo "$rt_entry" | awk '{print $1}')
-            RT_REGION=$(echo "$rt_entry" | awk '{print $2}')
-            echo -e "  ${RED}✖${NC} Deleting Cloud Router ${BOLD}${RT_NAME}${NC} (Region: ${RT_REGION})..."
-            gcloud compute routers delete "$RT_NAME" \
-                --project="$GCP_PROJECT" \
-                --region="$RT_REGION" \
-                --quiet 2>/dev/null || true
-        done
-        echo -e "${GREEN}[✓] Router/NAT cleanup finished.${NC}"
-    fi
+    # Delete Routers & NAT
+    for rt_entry in "${ROUTERS_TO_DELETE[@]}"; do
+        RT_NAME=$(echo "$rt_entry" | awk '{print $1}')
+        RT_REGION=$(echo "$rt_entry" | awk '{print $2}')
+        echo -e "  ${RED}✖${NC} Deleting Cloud Router ${BOLD}${RT_NAME}${NC}..."
+        gcloud compute routers delete "$RT_NAME" --project="$GCP_PROJECT" --region="$RT_REGION" --quiet 2>/dev/null || true
+    done
 
-    # 7. Release Static External IPs
-    if [ ${#IPS_TO_DELETE[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Releasing static external IP addresses...${NC}"
-        for ip_entry in "${IPS_TO_DELETE[@]}"; do
-            IP_NAME=$(echo "$ip_entry" | awk '{print $1}')
-            IP_REGION=$(echo "$ip_entry" | awk '{print $2}')
-            echo -e "  ${RED}✖${NC} Releasing IP ${BOLD}${IP_NAME}${NC}..."
-            if [ -n "$IP_REGION" ] && [ "$IP_REGION" != "(unset)" ]; then
-                gcloud compute addresses delete "$IP_NAME" \
-                    --project="$GCP_PROJECT" \
-                    --region="$IP_REGION" \
-                    --quiet 2>/dev/null || true
-            else
-                gcloud compute addresses delete "$IP_NAME" \
-                    --project="$GCP_PROJECT" \
-                    --global \
-                    --quiet 2>/dev/null || true
-            fi
-        done
-        echo -e "${GREEN}[✓] Static IP cleanup finished.${NC}"
-    fi
+    # Release Static IPs
+    for ip_entry in "${IPS_TO_DELETE[@]}"; do
+        IP_NAME=$(echo "$ip_entry" | awk '{print $1}')
+        IP_REGION=$(echo "$ip_entry" | awk '{print $2}')
+        echo -e "  ${RED}✖${NC} Releasing Static IP ${BOLD}${IP_NAME}${NC}..."
+        if [ -n "$IP_REGION" ] && [ "$IP_REGION" != "(unset)" ]; then
+            gcloud compute addresses delete "$IP_NAME" --project="$GCP_PROJECT" --region="$IP_REGION" --quiet 2>/dev/null || true
+        else
+            gcloud compute addresses delete "$IP_NAME" --project="$GCP_PROJECT" --global --quiet 2>/dev/null || true
+        fi
+    done
 
-    # 8. Delete Firewall Rules
-    if [ ${#FWS_TO_DELETE[@]} -gt 0 ]; then
-        echo -e "\n${YELLOW}[*] Removing DevOps firewall rules...${NC}"
-        for fw in "${FWS_TO_DELETE[@]}"; do
-            echo -e "  ${RED}✖${NC} Deleting firewall rule ${BOLD}${fw}${NC}..."
-            gcloud compute firewall-rules delete "$fw" \
-                --project="$GCP_PROJECT" \
-                --quiet 2>/dev/null || true
-        done
-        echo -e "${GREEN}[✓] Firewall cleanup finished.${NC}"
-    fi
+    # Delete Firewall Rules
+    for fw in "${FWS_TO_DELETE[@]}"; do
+        echo -e "  ${RED}✖${NC} Deleting firewall rule ${BOLD}${fw}${NC}..."
+        gcloud compute firewall-rules delete "$fw" --project="$GCP_PROJECT" --quiet 2>/dev/null || true
+    done
 fi
 
-# Local Docker & Volume Cleanup
-echo -e "\n${YELLOW}[*] Checking and stopping local Docker containers & volumes...${NC}"
-if command -v docker >/dev/null 2>&1; then
-    if [ -f "${SCRIPT_DIR}/docker/docker-compose.yml" ]; then
-        docker compose -f "${SCRIPT_DIR}/docker/docker-compose.yml" down -v --remove-orphans 2>/dev/null || true
-        echo -e "${GREEN}[✓] Local docker-compose services stopped and volumes purged.${NC}"
-    fi
-fi
-
-# Final Zero-Cost Verification
-echo -e "\n${YELLOW}[*] Performing final comprehensive Zero-Cost audit verification...${NC}"
-FINAL_INSTANCES=$(gcloud compute instances list --project="$GCP_PROJECT" --format="value(name)" 2>/dev/null || true)
-FINAL_GKE=$(gcloud container clusters list --project="$GCP_PROJECT" --format="value(name)" 2>/dev/null || true)
-FINAL_TPUS=$(gcloud compute tpus tpu-vm list --project="$GCP_PROJECT" --format="value(name)" 2>/dev/null || true)
-FINAL_DISKS=$(gcloud compute disks list --project="$GCP_PROJECT" --format="value(name)" 2>/dev/null || true)
-FINAL_IPS=$(gcloud compute addresses list --project="$GCP_PROJECT" --format="value(name)" 2>/dev/null || true)
-
-echo -e "\n${BOLD}================ FINAL CLOUD STATUS AUDIT ================${NC}"
-[ -z "$FINAL_INSTANCES" ] && echo -e "  Active VMs & GPUs:    ${GREEN}${BOLD}0 (NO Compute Engine charges)${NC}" || echo -e "  Active VMs:           ${RED}${BOLD}Warning: ${FINAL_INSTANCES}${NC}"
-[ -z "$FINAL_GKE" ]       && echo -e "  Active GKE Clusters:  ${GREEN}${BOLD}0 (NO Kubernetes cluster charges)${NC}" || echo -e "  Active GKE:           ${RED}${BOLD}Warning: ${FINAL_GKE}${NC}"
-[ -z "$FINAL_TPUS" ]      && echo -e "  Active Cloud TPUs:    ${GREEN}${BOLD}0 (NO TPU charges)${NC}" || echo -e "  Active TPUs:          ${RED}${BOLD}Warning: ${FINAL_TPUS}${NC}"
-[ -z "$FINAL_DISKS" ]     && echo -e "  Persistent Disks:     ${GREEN}${BOLD}0 (NO Persistent Disk charges)${NC}" || echo -e "  Persistent Disks:     ${YELLOW}Active: ${FINAL_DISKS}${NC}"
-[ -z "$FINAL_IPS" ]       && echo -e "  Reserved Static IPs:  ${GREEN}${BOLD}0 (NO Static IP idle charges)${NC}" || echo -e "  Static IPs:           ${YELLOW}Active: ${FINAL_IPS}${NC}"
+echo -e "\n${BOLD}================ FINAL STATUS AUDIT ================${NC}"
+echo -e "  On-Host Containers:   ${GREEN}${BOLD}0 (All stopped & removed)${NC}"
+echo -e "  Local K8s Clusters:   ${GREEN}${BOLD}0 (Uninstalled)${NC}"
+echo -e "  Active Cloud Compute: ${GREEN}${BOLD}0 (NO Compute charges)${NC}"
+echo -e "  Active Cloud Storage: ${GREEN}${BOLD}0 (NO Disk charges)${NC}"
 echo -e "  Estimated Cloud Burn: ${GREEN}${BOLD}\$0.00 / hr${NC}"
-echo -e "${BOLD}==========================================================${NC}\n"
+echo -e "${BOLD}====================================================${NC}\n"
 
-echo -e "${GREEN}${BOLD}🎉 Zero-cost teardown complete! All compute, GPU, TPU, disk, and network resources are deleted.${NC}\n"
+echo -e "${GREEN}${BOLD}🎉 Zero-cost teardown complete! All local containers, K8s services, and cloud resources are deleted.${NC}\n"

@@ -452,6 +452,9 @@ echo -e "${YELLOW}[*] DockerHub account:${NC} ${BOLD}${DOCKERHUB_USERNAME}${NC}"
 echo -e "${YELLOW}[*] SonarQube token:${NC} ${BOLD}${SONARQUBE_TOKEN:0:8}...${NC}"
 echo -e "${YELLOW}[*] Nexus repository:${NC} ${BOLD}${NEXUS_REPO}${NC}"
 
+# Required Ports for Enterprise DevOps & Monitoring Stack
+REQUIRED_PORTS=(80 443 8000 22 3000 5000 5601 8080 8081 8082 9000 9090 30080 30090 30300 30601 30751 30752 50000)
+
 # ==============================================================================
 # 1. Base Packages & Fast Python Manager (uv)
 # ==============================================================================
@@ -596,22 +599,51 @@ echo -e "${GREEN}[✓] Git & GitHub credentials configured.${NC}"
 # 5. Enterprise Google Kubernetes Engine (GKE) Cluster Setup & Authentication
 # ==============================================================================
 GKE_CLUSTER="${GKE_CLUSTER_NAME:-smart-mfg-prod-gke}"
-echo -e "\n${CYAN}[5/11] Connecting & Authenticating to Enterprise GKE Cluster ('${GKE_CLUSTER}')...${NC}"
+GKE_CONNECTED=false
 
 if command -v gcloud >/dev/null 2>&1; then
-    # Check if cluster exists; if not, invoke the enterprise GKE orchestrator
-    if ! gcloud container clusters describe "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
-        echo -e "${YELLOW}[*] Production GKE cluster '${GKE_CLUSTER}' not found. Provisioning cluster...${NC}"
-        bash "${SCRIPT_DIR}/setup-gke-production.sh"
+    ACTIVE_GCP_PROJECT=$(gcloud config get-value project 2>/dev/null || echo "")
+    if [ -n "$ACTIVE_GCP_PROJECT" ] && [ "$ACTIVE_GCP_PROJECT" != "(unset)" ]; then
+        echo -e "\n${CYAN}[5/11] Connecting & Authenticating to Enterprise GKE Cluster ('${GKE_CLUSTER}')...${NC}"
+        # Check if cluster exists; if not, invoke the enterprise GKE orchestrator
+        if ! gcloud container clusters describe "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+            echo -e "${YELLOW}[*] Production GKE cluster '${GKE_CLUSTER}' not found. Provisioning cluster...${NC}"
+            bash "${SCRIPT_DIR}/setup-gke-production.sh" || true
+        fi
+
+        if gcloud container clusters describe "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1; then
+            echo -e "${YELLOW}[*] Retrieving GKE cluster credentials for kubectl...${NC}"
+            gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
+            sudo -u "$REAL_USER" gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
+            GKE_CONNECTED=true
+            echo -e "${GREEN}[✓] Successfully authenticated to GKE: ${NC}$(kubectl config current-context 2>/dev/null)"
+        fi
+    fi
+fi
+
+if [ "$GKE_CONNECTED" != "true" ]; then
+    echo -e "\n${CYAN}[5/11] Configuring Host-Native Kubernetes (K3s) for On-Host / EC2 Execution...${NC}"
+    if ! command -v k3s >/dev/null 2>&1; then
+        echo -e "${YELLOW}[*] Installing K3s (Lightweight CNCF Kubernetes engine)...${NC}"
+        curl -sfL https://get.k3s.io | sh -s - --docker --write-kubeconfig-mode 644 || \
+        curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644
     fi
 
-    echo -e "${YELLOW}[*] Retrieving GKE cluster credentials for kubectl...${NC}"
-    gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT"
-    sudo -u "$REAL_USER" gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
-    echo -e "${GREEN}[✓] Successfully authenticated to GKE: ${NC}$(kubectl config current-context 2>/dev/null)"
-else
-    echo -e "${RED}[ERROR] 'gcloud' CLI is required for GKE production authentication.${NC}"
-    exit 1
+    # Wait for K3s readiness
+    for attempt in {1..30}; do
+        if [ -f /etc/rancher/k3s/k3s.yaml ] && systemctl is-active --quiet k3s 2>/dev/null; then
+            break
+        fi
+        sleep 2
+    done
+
+    mkdir -p /root/.kube "$USER_HOME/.kube"
+    cp /etc/rancher/k3s/k3s.yaml /root/.kube/config
+    cp /etc/rancher/k3s/k3s.yaml "$USER_HOME/.kube/config" 2>/dev/null || true
+    chmod 600 /root/.kube/config "$USER_HOME/.kube/config" 2>/dev/null || true
+    chown "$REAL_USER:$REAL_USER" "$USER_HOME/.kube/config" 2>/dev/null || true
+    export KUBECONFIG="/root/.kube/config"
+    echo -e "${GREEN}[✓] Host-native Kubernetes (K3s) active: ${NC}$(kubectl get nodes -o wide --no-headers 2>/dev/null | awk '{print $1, $2}')"
 fi
 
 mkdir -p /root/.kube "$USER_HOME/.kube"
@@ -620,7 +652,7 @@ cp /root/.kube/config "$USER_HOME/.kube/config" 2>/dev/null || true
 chmod 600 /root/.kube/config "$USER_HOME/.kube/config"
 chown "$REAL_USER:$REAL_USER" "$USER_HOME/.kube/config"
 
-echo -e "${GREEN}[✓] Production GKE Nodes:${NC}"
+echo -e "${GREEN}[✓] Active Kubernetes Nodes:${NC}"
 kubectl get nodes -o wide
 
 # ==============================================================================
@@ -749,6 +781,9 @@ if [ -f "${WORKSPACE_ROOT}/Dockerfile" ]; then
     docker build -t "kishorkumarparoi/smart-manufacturing:latest" \
         -f "${WORKSPACE_ROOT}/Dockerfile" "${WORKSPACE_ROOT}"
     echo -e "${GREEN}[✓] Native Linux amd64 container built successfully.${NC}"
+    if command -v k3s >/dev/null 2>&1; then
+        docker save "kishorkumarparoi/smart-manufacturing:latest" | k3s ctr images import - 2>/dev/null || true
+    fi
 fi
 
 # Deploy Production Smart Manufacturing Workload to GKE Cluster

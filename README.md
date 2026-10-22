@@ -20,25 +20,27 @@
 
 ## 📑 Table of Contents
 1. [Executive Summary & Architectural Overview](#-executive-summary--architectural-overview)
-2. [Master Architecture Diagram](#-master-architecture-diagram)
-3. [Step-by-Step Working Flow & Subsystems (with Diagrams)](#-step-by-step-working-flow--subsystems)
-   - [Step 1: Industrial IoT Sensor Telemetry & Edge Ingestion](#step-1-industrial-iot-sensor-telemetry--edge-ingestion)
-   - [Step 2: Dual AI Model Training & MLOps Lifecycle](#step-2-dual-ai-model-training--mlops-lifecycle)
-   - [Step 3: Enterprise 12-Stage Declarative Jenkins CI/CD Pipeline](#step-3-enterprise-12-stage-declarative-jenkins-cicd-pipeline)
-   - [Step 4: Multi-Cloud GitOps Delivery with ArgoCD & Kustomize](#step-4-multi-cloud-gitops-delivery-with-argocd--kustomize)
-   - [Step 5: High-Throughput Kubernetes GPU Inference Engine](#step-5-high-throughput-kubernetes-gpu-inference-engine)
-   - [Step 6: Distributed Observability (EFK Stack + Prometheus/Grafana)](#step-6-distributed-observability-efk-stack--prometheusgrafana)
-   - [Step 7: Active-Passive Multi-Cloud Disaster Recovery & Automated Failover](#step-7-active-passive-multi-cloud-disaster-recovery--automated-failover)
+2. [Master Architecture Diagram (01)](#-master-architecture-diagram)
+3. [Serialized Working Flow & Subsystems (01 to 08 - From Where to Where)](#-serialized-working-flow--subsystems)
+   - [Serialized Architecture Index & Data Flow Matrix](#serialized-architecture-index--data-flow-matrix)
+   - [Step 1 (02): Industrial IoT Sensor Telemetry & Edge Ingestion](#step-1-industrial-iot-sensor-telemetry--edge-ingestion)
+   - [Step 2 (03): Dual AI Model Training & MLOps Lifecycle](#step-2-dual-ai-model-training--mlops-lifecycle)
+   - [Step 3 (04): Enterprise 12-Stage Declarative Jenkins CI/CD Pipeline](#step-3-enterprise-12-stage-declarative-jenkins-cicd-pipeline)
+   - [Step 4 (05): Multi-Cloud GitOps Delivery with ArgoCD & Kustomize](#step-4-multi-cloud-gitops-delivery-with-argocd--kustomize)
+   - [Step 5 (06): High-Throughput Kubernetes GPU Inference Engine](#step-5-high-throughput-kubernetes-gpu-inference-engine)
+   - [Step 6 (07): Distributed Observability (EFK Stack + Prometheus/Grafana)](#step-6-distributed-observability-efk-stack--prometheusgrafana)
+   - [Step 7 (08): Active-Passive Multi-Cloud Disaster Recovery & Automated Failover](#step-7-active-passive-multi-cloud-disaster-recovery--automated-failover)
    - [Step 8: Zero-Trust Enterprise Security & Anti-Egress Defense Architecture](#step-8-zero-trust-enterprise-security--anti-egress-defense-architecture)
    - [Step 9: FinOps & Real-Time Multi-Cloud Cost Auditor](#step-9-finops--real-time-multi-cloud-cost-auditor)
 4. [Technology Stack & Principal Engineer Tool Matrix](#-technology-stack--principal-engineer-tool-matrix)
 5. [Service & Port Directory](#-service--port-directory)
 6. [End-to-End Verification & Quickstart Runbooks](#-end-to-end-verification--quickstart-runbooks)
-   - [Option 1: Local Workstation (Pytest, Train, API)](#option-1-local-workstation-pytest-train-api)
-   - [Option 2: Local Docker Compose (Simulated Multi-Cloud)](#option-2-local-docker-compose-simulated-multi-cloud)
-   - [Option 3: Enterprise Production GKE Deployment](#option-3-enterprise-production-gke-deployment)
-   - [Option 4: Management Controller VM (Jenkins, SonarQube, Nexus)](#option-4-management-controller-vm-jenkins-sonarqube-nexus)
-   - [Option 5: 8-Tier Zero-Cost Automated Teardown](#option-5-8-tier-zero-cost-automated-teardown)
+   - [Option 1: One-Click Autonomous EC2 Deployment (`./deploy.sh`)](#option-1-one-click-autonomous-ec2-deployment-deploysh)
+   - [Option 2: Local Workstation (Pytest, Train, API)](#option-2-local-workstation-pytest-train-api)
+   - [Option 3: Local Docker Compose (Simulated Multi-Cloud)](#option-3-local-docker-compose-simulated-multi-cloud)
+   - [Option 4: Enterprise Production GKE Deployment](#option-4-enterprise-production-gke-deployment)
+   - [Option 5: Management Controller VM (Jenkins, SonarQube, Nexus)](#option-5-management-controller-vm-jenkins-sonarqube-nexus)
+   - [Option 6: One-Click Zero-Cost Teardown & Teardown Verification (`./clear.sh`)](#option-6-one-click-zero-cost-teardown--teardown-verification-clearsh)
 7. [Principal Engineer System Design Interview Masterclass (20+ Q&As)](#-principal-engineer-system-design-interview-masterclass)
 8. [License & Attribution](#-license--attribution)
 
@@ -60,9 +62,9 @@ This platform solves this challenge with a **hybrid edge-to-cloud MLOps architec
 
 ---
 
-## 🗺️ Master Architecture Diagram
+## 🗺️ Master Architecture Diagram (01)
 
-![Smart Manufacturing Master Architecture](docs/images/architecture_master.png)
+![01 Master Multi-Cloud Architecture](docs/images/01_master_architecture.png)
 
 ### End-to-End Cloud & Edge Data Flow (Mermaid)
 
@@ -144,15 +146,28 @@ flowchart TD
 
 ---
 
-## 🔄 Step-by-Step Working Flow & Subsystems
+## 🔄 Serialized Working Flow & Subsystems (01 to 08 - From Where to Where)
 
-Every stage of the Smart Manufacturing platform is engineered as a decoupled, resilient subsystem. Below is the comprehensive step-by-step breakdown accompanied by architectural workflow diagrams.
+Every stage of the Smart Manufacturing platform is engineered as a decoupled, resilient subsystem. To provide total architectural transparency for a **Principal Engineer Interview**, all diagrams and workflows are strictly serialized from **01** to **08**, establishing an unambiguous end-to-end trace from edge physical machines to multi-cloud failover.
+
+### Serialized Architecture Index & Data Flow Matrix
+
+| Step / Phase | Serialized Diagram | Subsystem Name | Data / Control Origin ("From Where") | Destination & Processing ("To Where") | Key Protocols & Latency SLA |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Global** | [`01_master_architecture.png`](docs/images/01_master_architecture.png) | **Master Multi-Cloud Architecture** | Factory Floor + Developer Git Push | AWS Primary (EKS) + GCP Standby (GKE) | Edge-to-Cloud, Route 53, Multi-Region |
+| **Step 1** | [`02_iot_telemetry_ingestion.png`](docs/images/02_iot_telemetry_ingestion.png) | **IoT Sensor Telemetry & Ingestion** | CNC Spindles, Robots, AOI Cameras | Edge Gateway $\to$ Redis Cache $\to$ Cloud Ingress | MQTT / Kafka / REST, Sub-2ms |
+| **Step 2** | [`03_ml_training_lifecycle.png`](docs/images/03_ml_training_lifecycle.png) | **Dual AI Model Training Lifecycle** | Factory Sensor Logs & Camera Images | MLflow Tracking $\to$ Registry $\to$ S3/GCS | PyTorch, Scikit-learn, Kubeflow v2 |
+| **Step 3** | [`04_jenkins_12stage_pipeline.png`](docs/images/04_jenkins_12stage_pipeline.png) | **12-Stage Enterprise Jenkins CI/CD** | Git Push (`main` / `production`) | SonarQube $\to$ Trivy $\to$ Nexus 3 $\to$ DockerHub | Declarative Groovy, Quality Gates |
+| **Step 4** | [`05_gitops_argocd_delivery.png`](docs/images/05_gitops_argocd_delivery.png) | **Multi-Cloud GitOps Delivery (ArgoCD)**| GitOps Manifest Repo (`k8s/overlays/`) | AWS EKS Cluster & GCP GKE Cluster | ArgoCD ApplicationSets, Zero Drift |
+| **Step 5** | [`06_gpu_inference_serving.png`](docs/images/06_gpu_inference_serving.png) | **Kubernetes GPU Inference Serving** | Ingress Traffic (`/predict/sensor`, `/vision`) | 3 Probes $\to$ FastAPI $\to$ Autoencoder / CNN | P95 Latency $<15\text{ms}$, HPA Autoscale |
+| **Step 6** | [`07_distributed_observability_efk.png`](docs/images/07_distributed_observability_efk.png)| **Distributed Observability (EFK)** | Pod `stdout/stderr` & `/metrics` | Filebeat $\to$ Logstash $\to$ ES $\to$ Kibana / Grafana | Elastic Beats, PromQL, 15s Scrapes |
+| **Step 7** | [`08_multicloud_active_passive_failover.png`](docs/images/08_multicloud_active_passive_failover.png)| **Multi-Cloud Disaster Recovery** | Active AWS Region Outage (3 strikes) | Dynamic Route 53 Failover $\to$ Standby GCP GKE | RTO $<15\text{s}$, RPO $<60\text{s}$ |
 
 ---
 
 ### Step 1: Industrial IoT Sensor Telemetry & Edge Ingestion
 
-![Industrial IoT Sensor Telemetry & Edge Ingestion Flow](docs/images/iot_telemetry_flow.png)
+![02 IoT Telemetry Ingestion](docs/images/02_iot_telemetry_ingestion.png)
 
 ```mermaid
 flowchart LR
@@ -202,7 +217,7 @@ flowchart LR
 
 ### Step 2: Dual AI Model Training & MLOps Lifecycle
 
-![Industrial AI & MLOps Training Lifecycle](docs/images/ml_training_lifecycle.png)
+![03 ML Training Lifecycle](docs/images/03_ml_training_lifecycle.png)
 
 ```mermaid
 flowchart TD
@@ -259,7 +274,7 @@ flowchart TD
 
 ### Step 3: Enterprise 12-Stage Declarative Jenkins CI/CD Pipeline
 
-![Enterprise 12-Stage Jenkins CI/CD Pipeline Flow](docs/images/jenkins_12stage_pipeline.png)
+![04 Jenkins 12-Stage CI/CD Pipeline](docs/images/04_jenkins_12stage_pipeline.png)
 
 ```mermaid
 flowchart TD
@@ -297,7 +312,7 @@ Defined in [`Jenkinsfile`](file:///Users/kishorkumarparoi/Desktop/smart_manufact
 
 ### Step 4: Multi-Cloud GitOps Delivery with ArgoCD & Kustomize
 
-![Multi-Cloud GitOps Delivery Workflow](docs/images/gitops_argocd_engine.png)
+![05 GitOps ArgoCD Delivery](docs/images/05_gitops_argocd_delivery.png)
 
 ```mermaid
 flowchart TD
@@ -339,7 +354,7 @@ flowchart TD
 
 ### Step 5: High-Throughput Kubernetes GPU Inference Engine
 
-![High-Throughput Kubernetes GPU Inference Architecture](docs/images/gpu_inference_serving.png)
+![06 GPU Inference Serving](docs/images/06_gpu_inference_serving.png)
 
 ```mermaid
 flowchart TD
@@ -381,6 +396,8 @@ flowchart TD
 
 ### Step 6: Distributed Observability (EFK Stack + Prometheus/Grafana)
 
+![07 Distributed Observability EFK Stack & Prometheus/Grafana](docs/images/07_distributed_observability_efk.png)
+
 ```mermaid
 flowchart TD
     subgraph NodeLevel["Every Kubernetes Node (DaemonSet)"]
@@ -418,6 +435,8 @@ flowchart TD
 ---
 
 ### Step 7: Active-Passive Multi-Cloud Disaster Recovery & Automated Failover
+
+![08 Multi-Cloud Active-Passive Disaster Recovery & Automated Failover](docs/images/08_multicloud_active_passive_failover.png)
 
 ```mermaid
 sequenceDiagram
@@ -609,7 +628,41 @@ Microsoft Azure                  $1.224/hr      $895.90/mo             $429.77/m
 
 ## 🚀 End-to-End Verification & Quickstart Runbooks
 
-### Option 1: Local Workstation (Pytest, Train, API)
+### Option 1: One-Click Autonomous EC2 Deployment (`./deploy.sh`)
+
+You can launch the entire end-to-end industrial platform on **any freshly provisioned AWS EC2 instance** (e.g., `t3.xlarge`, `c5.2xlarge`, or GPU instance `g4dn.xlarge` running Ubuntu 22.04/24.04 or Debian) with a single command. The script auto-installs Docker CE, K3s (certified lightweight CNCF Kubernetes), Kubectl, ArgoCD, SonarQube, Nexus 3, Trivy, Prometheus, Grafana, Redis, EFK Logging, and Jenkins, and builds & deploys the Smart Manufacturing AI Application without requiring any cloud CLI configuration:
+
+```bash
+# 1. SSH into your EC2 instance:
+ssh -i "your-key.pem" ubuntu@<EC2_PUBLIC_IP>
+
+# 2. Clone the repository directly from GitHub:
+git clone https://github.com/KishorKumarParoi/smart-manufacturing.git
+cd smart-manufacturing
+
+# 3. Execute one-click autonomous deployment:
+./deploy.sh
+
+# 4. Verify running tools & containers:
+kubectl get nodes,pods -A
+docker ps
+```
+
+**What `./deploy.sh` Automatically Executes on EC2:**
+1. **Host Hardening & Kernel Tuning**: Applies production `sysctl` limits (`vm.max_map_count=524288`, file descriptors `1048576`, conntrack ceiling) and installs Astral `uv`.
+2. **Container Engine Setup**: Installs Docker CE & Compose plugin with permanent non-root socket permissions (`0666`).
+3. **Host-Native Kubernetes (K3s)**: Deploys single-node CNCF Kubernetes with zero cloud IAM dependencies.
+4. **GitOps & Security Tools**: Installs Kubectl, ArgoCD CLI, and Trivy CVE vulnerability scanner.
+5. **Quality & Artifact Infrastructure**: Boots SonarQube Community on port `:9000` and Sonatype Nexus 3 on port `:8081`.
+6. **In-Memory Cache & Logging**: Deploys Redis on `:6379`, Elasticsearch on `:9200`, and Logstash on `:5044`.
+7. **Observability**: Applies Prometheus Server on `:9090` and Grafana on `:3000`.
+8. **Native AI Application**: Compiles root Dockerfile and schedules high-throughput inference pods onto Kubernetes.
+9. **CI/CD Controller**: Launches Jenkins LTS on port `:8080` with pre-installed plugins (Docker, Kubernetes, Git, SonarQube, Trivy, uv) and pre-wired 12-stage pipeline jobs.
+10. **Systemd Daemons**: Configures background port forwards and anti-egress token bucket rate-limiting (25 Mbps).
+
+---
+
+### Option 2: Local Workstation (Pytest, Train, API)
 
 The entire platform is verifiable locally on macOS (Apple Silicon MPS), Linux (CUDA), or Windows:
 
@@ -639,7 +692,7 @@ make failover-drill
 
 ---
 
-### Option 2: Local Docker Compose (Simulated Multi-Cloud)
+### Option 3: Local Docker Compose (Simulated Multi-Cloud)
 
 Run the simulated multi-cloud environment locally without cloud expenses:
 
@@ -675,7 +728,7 @@ make compose-down
 
 ---
 
-### Option 3: Enterprise Production GKE Deployment
+### Option 4: Enterprise Production GKE Deployment
 
 Provisions VPC-native Google Kubernetes Engine (GKE) with Workload Identity and auto-scaling GPU pools:
 
@@ -697,7 +750,7 @@ make allow-my-ip
 
 ---
 
-### Option 4: Management Controller VM (Jenkins, SonarQube, Nexus)
+### Option 5: Management Controller VM (Jenkins, SonarQube, Nexus)
 
 To run a dedicated management VM running the CI/CD controller toolchain connected to GKE:
 
@@ -707,31 +760,28 @@ To run a dedicated management VM running the CI/CD controller toolchain connecte
 
 ---
 
-### Option 5: 8-Tier Zero-Cost Automated Teardown
+### Option 6: One-Click Zero-Cost Teardown & Teardown Verification (`./clear.sh`)
 
-When you are finished practicing or testing, immediately delete ALL active cloud resources to eliminate 100% of cloud costs across all 8 infrastructure tiers:
+When you are finished practicing or testing on your EC2 instance or cloud project, running `./clear.sh` cleanly purges all containers, Kubernetes namespaces, background daemons, rate-limiters, and cloud resources without requiring any manual cleanup:
 
 ```bash
-# Interactive teardown (scans across all 8 tiers, displays summary, confirms before deleting):
+# On your EC2 instance or local host - clean up everything:
 ./clear.sh
-# or: make clear
 
-# Instant non-interactive teardown:
+# Instant non-interactive force wipe:
 ./clear.sh --force
 
-# Dry-run audit (view active cost-incurring resources across all 8 tiers without deleting):
+# Dry-run audit (view active cost-incurring resources across all tiers without deleting):
 ./clear.sh --dry-run
 ```
 
-**What `./clear.sh` Deletes Across All 8 Tiers:**
-1. Compute VMs & GPU worker nodes
-2. GKE clusters & GPU node pools
-3. Google Cloud TPUs (TPU VMs & nodes)
-4. All persistent disks (standard, balanced, SSD, orphaned)
-5. Cloud NAT gateways, Cloud Routers, and Forwarding Rules / Load Balancers
-6. Reserved static external IP addresses
-7. Custom firewall rules
-8. Local Docker containers and dangling volumes
+**What `./clear.sh` Cleans Up Across All Tiers:**
+* **On-Host Docker Containers**: Terminates and deletes all platform containers (`jenkins`, `sonarqube`, `nexus`, `argocd`, `elasticsearch`, `kibana`, `logstash`, `filebeat`, `prometheus`, `grafana`, `redis`, `minio`, `mlflow`, `smart-manufacturing`) and prunes orphan networks.
+* **Kubernetes (K3s / Clustered)**: Automatically uninstalls local K3s or purges namespaces (`smart-manufacturing`, `logging`, `monitoring`, `argocd`).
+* **Background Daemons**: Terminates lingering Python / Uvicorn worker processes and deletes systemd port-forward services (`argocd-port-forward`, `prometheus-port-forward`, etc.).
+* **Linux Network Rate Limiting**: Resets Linux Kernel `tc` token bucket egress limits from the WAN interface.
+* **Build & Test Artifacts**: Purges temporary test caches (`.pytest_cache`, `.coverage`, `coverage.xml`, `mlflow.db`, checkpoint files).
+* **Multi-Cloud (GCP / AWS)**: If `gcloud` is present and authenticated, executes the 8-tier audit and deletes cloud VMs, GPU nodes, GKE clusters, TPUs, disks, and forwarding rules.
 
 ---
 
