@@ -54,14 +54,30 @@ def train_sensor_pipeline(epochs: int = 15, batch_size: int = 32, lr: float = 0.
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
     # 3. Setup MLflow
+    import socket
+    import urllib.parse
+
+    remote_uri = config.mlflow_tracking_uri
+    use_remote = False
     try:
-        mlflow.set_tracking_uri(config.mlflow_tracking_uri)
-        mlflow.set_experiment("smart-manufacturing-sensor-anomalies")
-    except Exception as e:
-        print(
-            f"[!] Warning: Could not connect to remote MLflow ({e}). Falling back to local file store."
-        )
-        mlflow.set_tracking_uri("file:///tmp/mlflow-runs")
+        parsed = urllib.parse.urlparse(remote_uri)
+        if parsed.hostname:
+            socket.gethostbyname(parsed.hostname)
+            use_remote = True
+    except Exception:
+        use_remote = False
+
+    if use_remote:
+        try:
+            mlflow.set_tracking_uri(remote_uri)
+            mlflow.set_experiment("smart-manufacturing-sensor-anomalies")
+        except Exception as e:
+            print(f"[!] Warning: Remote MLflow unreachable ({e}). Falling back to local store.")
+            mlflow.set_tracking_uri("sqlite:///mlflow.db")
+            mlflow.set_experiment("smart-manufacturing-sensor-anomalies")
+    else:
+        print("[i] Using local SQLite MLflow tracking store (mlflow.db)")
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
         mlflow.set_experiment("smart-manufacturing-sensor-anomalies")
 
     with mlflow.start_run(run_name="sensor-autoencoder-gpu"):
@@ -130,9 +146,10 @@ def train_sensor_pipeline(epochs: int = 15, batch_size: int = 32, lr: float = 0.
         mlflow.log_artifact(checkpoint_path)
         try:
             mlflow.pytorch.log_model(
-                pytorch_model=model,
+                pytorch_model=model.cpu(),
                 artifact_path="model",
                 registered_model_name="smart_mfg_sensor_autoencoder",
+                serialization_format="pickle",
             )
             print("[✓] Model successfully logged and registered with MLflow Registry!")
         except Exception as e:

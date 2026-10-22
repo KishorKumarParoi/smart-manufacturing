@@ -28,6 +28,7 @@ dependencies = [
     "joblib>=1.6.0",
     "matplotlib>=3.11.2",
     "seaborn>=0.13.2",
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
