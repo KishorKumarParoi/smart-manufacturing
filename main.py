@@ -11,6 +11,7 @@ from prometheus_client import (
     Counter,
     Histogram,
     Gauge,
+    REGISTRY,
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
@@ -34,34 +35,50 @@ except Exception as _e:
     app.logger.info(f"[i] Redis not connected ({_e}) - falling back to memory execution")
 
 # Prometheus Metrics Collectors
-REQUEST_COUNT = Counter(
+def _get_or_create_metric(collector_cls, name, documentation, *args, **kwargs):
+    if name in REGISTRY._names_to_collectors:
+        return REGISTRY._names_to_collectors[name]
+    try:
+        return collector_cls(name, documentation, *args, **kwargs)
+    except Exception:
+        return REGISTRY._names_to_collectors.get(name)
+
+REQUEST_COUNT = _get_or_create_metric(
+    Counter,
     "smart_mfg_http_requests_total",
     "Total HTTP requests handled",
     ["endpoint", "status"],
 )
-INFERENCE_COUNT = Counter(
+INFERENCE_COUNT = _get_or_create_metric(
+    Counter,
     "smart_mfg_inference_total",
     "Total AI inference predictions",
     ["prediction_class"],
 )
-INFERENCE_LATENCY = Histogram(
+INFERENCE_LATENCY = _get_or_create_metric(
+    Histogram,
     "smart_mfg_inference_latency_seconds",
     "Inference execution latency in seconds",
+    ["model_type", "device"],
     buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5],
 )
-MODEL_LOADED_GAUGE = Gauge(
+MODEL_LOADED_GAUGE = _get_or_create_metric(
+    Gauge,
     "smart_mfg_model_loaded_status",
     "Model loaded status (1=loaded, 0=not loaded)",
 )
-CONFIDENCE_GAUGE = Gauge(
+CONFIDENCE_GAUGE = _get_or_create_metric(
+    Gauge,
     "smart_mfg_last_prediction_confidence",
     "Confidence score of the most recent inference prediction",
     ["prediction_class"],
 )
-CACHE_HIT_COUNTER = Counter(
+CACHE_HIT_COUNTER = _get_or_create_metric(
+    Counter,
     "smart_mfg_cache_hits_total",
     "Total prediction cache hits served from Redis",
 )
+
 
 MODEL_PATH = "artifacts/models/model.pkl"
 SCALER_PATH = "artifacts/models/scaler.pkl"
@@ -485,7 +502,10 @@ def predict_efficiency(form_data):
 
     # Record inference metrics
     duration = time.time() - start_time
-    INFERENCE_LATENCY.observe(duration)
+    try:
+        INFERENCE_LATENCY.labels(model_type="tabular_pipeline", device="cpu").observe(duration)
+    except Exception:
+        pass
     INFERENCE_COUNT.labels(prediction_class=label_name).inc()
 
     # Probabilities

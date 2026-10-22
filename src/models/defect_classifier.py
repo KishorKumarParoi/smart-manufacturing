@@ -53,6 +53,12 @@ class ManufacturingDefectClassifier(nn.Module):
         return x
 
     def predict_probabilities(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            logits = self.forward(x)
-            return F.softmax(logits, dim=1)
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                logits = self.forward(x)
+                return F.softmax(logits, dim=1)
+        finally:
+            if was_training:
+                self.train()

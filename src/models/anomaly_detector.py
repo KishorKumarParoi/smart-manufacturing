@@ -41,7 +41,13 @@ class IndustrialSensorAutoencoder(nn.Module):
 
     def compute_anomaly_score(self, x: torch.Tensor) -> torch.Tensor:
         """Computes sample-wise MSE reconstruction error."""
-        with torch.no_grad():
-            reconstructed, _ = self.forward(x)
-            mse = torch.mean((x - reconstructed) ** 2, dim=1)
-            return mse
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                reconstructed, _ = self.forward(x)
+                mse = torch.mean((x - reconstructed) ** 2, dim=1)
+                return mse
+        finally:
+            if was_training:
+                self.train()

@@ -42,7 +42,9 @@ app.add_middleware(
 # Global State & Models
 device = config.get_torch_device()
 sensor_model = IndustrialSensorAutoencoder(input_dim=7, latent_dim=3).to(device)
+sensor_model.eval()
 vision_model = ManufacturingDefectClassifier(num_classes=4).to(device)
+vision_model.eval()
 calibrated_threshold = config.anomaly_threshold
 defect_class_names = ["normal", "crack", "pitting", "burn_mark"]
 
