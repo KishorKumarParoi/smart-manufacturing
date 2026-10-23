@@ -1,5 +1,8 @@
-# Multi-stage production container for GPU Inference Engine
-FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime AS base
+# Multi-stage production container for GPU/CPU Inference Engine
+# Optimized: Defaults to python:3.11-slim with PyTorch CPU wheels (<500MB image, fast pull & build)
+# Can be overridden via --build-arg BASE_IMAGE=pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime for GPU clusters
+ARG BASE_IMAGE=python:3.11-slim
+FROM ${BASE_IMAGE} AS base
 
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
@@ -8,16 +11,19 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install system dependencies
+# Install minimal system utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
+# Pre-install PyTorch CPU to prevent pulling heavy 4.6GB CUDA binaries on standard CPU cloud instances
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
 # Install Python dependencies
 COPY pyproject.toml .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+RUN pip install --no-cache-dir .
 
 # Copy application source code
 COPY src/ /app/src/

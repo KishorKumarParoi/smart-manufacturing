@@ -116,7 +116,9 @@ else
 
         # Docker Compose down
         if [ -f "${SCRIPT_DIR}/docker/docker-compose.yml" ]; then
-            docker compose -f "${SCRIPT_DIR}/docker/docker-compose.yml" down -v --remove-orphans 2>/dev/null || true
+            docker compose -f "${SCRIPT_DIR}/docker/docker-compose.yml" down -v --remove-orphans 2>/dev/null || \
+            sudo -E docker compose -f "${SCRIPT_DIR}/docker/docker-compose.yml" down -v --remove-orphans 2>/dev/null || \
+            sudo -E docker-compose -f "${SCRIPT_DIR}/docker/docker-compose.yml" down -v --remove-orphans 2>/dev/null || true
         fi
 
         # Find any matching project containers

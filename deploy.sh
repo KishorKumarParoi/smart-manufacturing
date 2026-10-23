@@ -64,7 +64,7 @@ for arg in "$@"; do
         --compose|--local|-c)
             TARGET_MODE="compose"
             ;;
-        --quick)
+        --quick|--fast|--lightweight)
             TARGET_MODE="quick"
             ;;
         -h|--help)
@@ -76,6 +76,49 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# BuildKit & Parallel Resource Constraints (optimized for budget EC2 & local VMs)
+export DOCKER_BUILDKIT=1
+export COMPOSE_DOCKER_CLI_BUILD=1
+export COMPOSE_PARALLEL_LIMIT=2
+
+run_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        if docker ps >/dev/null 2>&1; then
+            docker compose "$@"
+        else
+            sudo -E docker compose "$@"
+        fi
+    elif docker-compose version >/dev/null 2>&1; then
+        if docker ps >/dev/null 2>&1; then
+            docker-compose "$@"
+        else
+            sudo -E docker-compose "$@"
+        fi
+    else
+        sudo -E docker compose "$@"
+    fi
+}
+
+detect_host_ip() {
+    local host_ip="localhost"
+    if command -v curl >/dev/null 2>&1; then
+        # Check AWS EC2 IMDSv1
+        local ec2_ip
+        ec2_ip=$(curl -s --connect-timeout 1 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+        if [ -n "$ec2_ip" ] && [[ "$ec2_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            host_ip="$ec2_ip"
+        else
+            # Check public external IP
+            local ext_ip
+            ext_ip=$(curl -s --connect-timeout 2 https://ifconfig.me 2>/dev/null || curl -s --connect-timeout 2 https://api.ipify.org 2>/dev/null || true)
+            if [ -n "$ext_ip" ] && [[ "$ext_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                host_ip="$ext_ip"
+            fi
+        fi
+    fi
+    echo "$host_ip"
+}
 
 IS_LINUX=false
 IS_DARWIN=false
@@ -132,10 +175,10 @@ if [ "$TARGET_MODE" = "host" ]; then
     fi
 
 # ==============================================================================
-# MODE 2: DOCKER COMPOSE LOCAL PLATFORM
+# MODE 2: DOCKER COMPOSE LOCAL / FULL MULTI-CLOUD PLATFORM
 # ==============================================================================
 elif [ "$TARGET_MODE" = "compose" ]; then
-    echo -e "${YELLOW}[*] Target Mode:${NC} ${BOLD}Local Simulated Multi-Cloud (Docker Compose)${NC}"
+    echo -e "${YELLOW}[*] Target Mode:${NC} ${BOLD}Full Simulated Multi-Cloud Stack (Docker Compose)${NC}"
     if ! command -v docker >/dev/null 2>&1; then
         echo -e "${RED}[ERROR] Docker is required for Docker Compose deployment.${NC}"
         exit 1
@@ -147,20 +190,22 @@ elif [ "$TARGET_MODE" = "compose" ]; then
         exit 1
     fi
 
-    echo -e "${YELLOW}[*] Building and starting local simulated multi-cloud environment...${NC}"
-    docker compose -f "$COMPOSE_FILE" up -d --build
+    echo -e "${YELLOW}[*] Building and starting simulated multi-cloud environment (BuildKit accelerated)...${NC}"
+    run_compose -f "$COMPOSE_FILE" up -d --build
 
-    echo -e "\n${GREEN}${BOLD}[✓] Local platform services are active:${NC}"
-    echo -e "  • Industrial Cockpit Frontend (Next.js 15):  ${BOLD}http://localhost:3000${NC}"
-    echo -e "  • Telemetry Gateway & Controller (Go):       ${BOLD}http://localhost:8085${NC}"
-    echo -e "  • Low-Latency Edge SIMD Ingestor (Rust):     ${BOLD}http://localhost:8082${NC}"
-    echo -e "  • Primary AI Inference API (AWS us-east-1):   ${BOLD}http://localhost:8000${NC}"
-    echo -e "  • Failover AI Inference API (GCP us-central1): ${BOLD}http://localhost:8001${NC}"
-    echo -e "  • MLflow Tracking & Model Registry:          ${BOLD}http://localhost:5000${NC}"
-    echo -e "  • MinIO S3 Object Storage Console:           ${BOLD}http://localhost:9001${NC} (admin / minioadminpassword)"
+    DISPLAY_IP=$(detect_host_ip)
+
+    echo -e "\n${GREEN}${BOLD}[✓] Platform services are active & operational:${NC}"
+    echo -e "  • Industrial Cockpit Frontend (Next.js 15):  ${BOLD}http://${DISPLAY_IP}:3000${NC} (or http://localhost:3000)"
+    echo -e "  • Telemetry Gateway & Controller (Go):       ${BOLD}http://${DISPLAY_IP}:8085${NC}"
+    echo -e "  • Low-Latency Edge SIMD Ingestor (Rust):     ${BOLD}http://${DISPLAY_IP}:8082${NC}"
+    echo -e "  • Primary AI Inference API (AWS us-east-1):   ${BOLD}http://${DISPLAY_IP}:8000${NC}"
+    echo -e "  • Failover AI Inference API (GCP us-central1): ${BOLD}http://${DISPLAY_IP}:8001${NC}"
+    echo -e "  • MLflow Tracking & Model Registry:          ${BOLD}http://${DISPLAY_IP}:5000${NC}"
+    echo -e "  • MinIO S3 Object Storage Console:           ${BOLD}http://${DISPLAY_IP}:9001${NC} (admin / minioadminpassword)"
     echo -e "  • Health Prober & Failover Daemon:           Active in background"
-    echo -e "\n${CYAN}To view live frontend: open http://localhost:3000${NC}"
-    echo -e "${CYAN}To view live predictions: curl -s http://localhost:8000/health | jq .${NC}"
+    echo -e "\n${CYAN}To view live frontend: open http://${DISPLAY_IP}:3000${NC}"
+    echo -e "${CYAN}To view live predictions: curl -s http://${DISPLAY_IP}:8000/health | jq .${NC}"
     echo -e "${CYAN}To teardown: ./clear.sh or make compose-down${NC}\n"
 
 # ==============================================================================
@@ -175,17 +220,30 @@ elif [ "$TARGET_MODE" = "gke" ]; then
     bash "${SCRIPT_DIR}/scripts/setup-gke-production.sh" "${FILTERED_ARGS[@]}"
 
 # ==============================================================================
-# MODE 4: QUICKSTART (APP + REDIS + PROMETHEUS + GRAFANA)
+# MODE 4: QUICKSTART LIGHTWEIGHT MICROSERVICES (<30s, <1GB RAM)
 # ==============================================================================
 elif [ "$TARGET_MODE" = "quick" ]; then
-    echo -e "${YELLOW}[*] Target Mode:${NC} ${BOLD}Quick-Start Microservices${NC}"
-    if command -v docker >/dev/null 2>&1; then
-        docker run -d --name smart-mfg-redis -p 6379:6379 redis:7.2-alpine 2>/dev/null || true
+    echo -e "${YELLOW}[*] Target Mode:${NC} ${BOLD}Lightweight Core Microservices (Sub-30s Boot, <1GB RAM)${NC}"
+    
+    COMPOSE_FILE="${SCRIPT_DIR}/docker/docker-compose.yml"
+    if command -v docker >/dev/null 2>&1 && [ -f "$COMPOSE_FILE" ]; then
+        echo -e "${YELLOW}[*] Launching core microservices via Docker Compose...${NC}"
+        run_compose -f "$COMPOSE_FILE" up -d --build frontend gateway-go ingest-rust api-primary redis
+        
+        DISPLAY_IP=$(detect_host_ip)
+        echo -e "\n${GREEN}${BOLD}[✓] Core Microservices are active:${NC}"
+        echo -e "  • Industrial Cockpit Frontend (Next.js 15):  ${BOLD}http://${DISPLAY_IP}:3000${NC} (or http://localhost:3000)"
+        echo -e "  • Telemetry Gateway & Controller (Go):       ${BOLD}http://${DISPLAY_IP}:8085${NC}"
+        echo -e "  • Low-Latency Edge SIMD Ingestor (Rust):     ${BOLD}http://${DISPLAY_IP}:8082${NC}"
+        echo -e "  • Primary AI Inference API (AWS us-east-1):   ${BOLD}http://${DISPLAY_IP}:8000${NC}"
+        echo -e "  • Redis Telemetry & Semantic Cache:          ${BOLD}localhost:6379${NC}"
+        echo -e "\n${CYAN}To teardown: ./clear.sh or make compose-down${NC}\n"
+    else
+        PYTHON_BIN="python3"
+        [ -f "${SCRIPT_DIR}/.venv/bin/python3" ] && PYTHON_BIN="${SCRIPT_DIR}/.venv/bin/python3"
+        echo -e "${GREEN}[✓] Starting Smart Manufacturing Application Server...${NC}"
+        PORT=8000 $PYTHON_BIN application.py &
+        APP_PID=$!
+        echo -e "${GREEN}[✓] Application running on http://localhost:8000 (PID: $APP_PID)${NC}"
     fi
-    PYTHON_BIN="python3"
-    [ -f "${SCRIPT_DIR}/.venv/bin/python3" ] && PYTHON_BIN="${SCRIPT_DIR}/.venv/bin/python3"
-    echo -e "${GREEN}[✓] Starting Smart Manufacturing Application Server...${NC}"
-    PORT=8000 $PYTHON_BIN application.py &
-    APP_PID=$!
-    echo -e "${GREEN}[✓] Application running on http://localhost:8000 (PID: $APP_PID)${NC}"
 fi
