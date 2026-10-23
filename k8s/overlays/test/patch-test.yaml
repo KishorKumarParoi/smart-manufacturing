@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-manufacturing-api
+  namespace: smart-manufacturing-test
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: inference-api
+          image: kishorkumarparoi/smart-manufacturing:test-latest
+          imagePullPolicy: Always
+          env:
+            - name: APP_ENV
+              value: "testing"
+            - name: TEST_MOCKS_ENABLED
+              value: "true"
+            - name: REDIS_HOST
+              value: "redis-test.smart-manufacturing-test.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: PORT
+              value: "8000"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"

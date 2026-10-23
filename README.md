@@ -32,6 +32,8 @@
    - [Step 7 (08): Active-Passive Multi-Cloud Disaster Recovery & Automated Failover](#step-7-active-passive-multi-cloud-disaster-recovery--automated-failover)
    - [Step 8: Zero-Trust Enterprise Security & Anti-Egress Defense Architecture](#step-8-zero-trust-enterprise-security--anti-egress-defense-architecture)
    - [Step 9: FinOps & Real-Time Multi-Cloud Cost Auditor](#step-9-finops--real-time-multi-cloud-cost-auditor)
+   - [Step 10 (09): 5-Tier Enterprise GitFlow & Multi-Branch Promotion Strategy](#step-10-5-tier-enterprise-gitflow--multi-branch-promotion-strategy)
+   - [Step 11 (10): Step-by-Step Educational Curriculum & Learning Roadmap](#step-11-step-by-step-educational-curriculum--learning-roadmap)
 4. [Technology Stack & Principal Engineer Tool Matrix](#-technology-stack--principal-engineer-tool-matrix)
 5. [Service & Port Directory](#-service--port-directory)
 6. [End-to-End Verification & Quickstart Runbooks](#-end-to-end-verification--quickstart-runbooks)
@@ -613,6 +615,39 @@ Microsoft Azure                  $1.224/hr      $895.90/mo             $429.77/m
 1. **Auto-Scaling GPU Pool (Zero Idle Cost)**: Configures GKE and EKS GPU node pools with **`min_nodes = 0`** and **`max_nodes = 2`**. When no batch inspection or training workloads are queued, the GPU nodes deprovision completely, saving **$395.28/month**.
 2. **Spot / Preemptible Worker Nodes**: Stateless inference and batch training utilize Spot instances with graceful node termination notices, cutting compute costs by **51%**.
 3. **Storage Lifecycle Policies**: S3 and GCS bucket lifecycles transition training checkpoints to Glacier / Coldline after 30 days.
+
+---
+
+### Step 10 (09): 5-Tier Enterprise GitFlow & Multi-Branch Promotion Strategy
+
+![09 Enterprise Git Flow](docs/images/09_enterprise_git_branching_workflow.png)
+
+The platform enforces a mission-critical **5-Tier Enterprise Git Branching Architecture** matching strict Fortune 500 standards:
+
+1. **`feature/*` (Local Developer Sandbox)**: Short-lived feature branches branched off `dev`. Fast local linting (`ruff`, `mypy`) and unit test validation before opening PRs.
+2. **`dev` (Continuous Integration)**: Central integration branch. Automated Docker dev build and instantaneous continuous delivery into Kubernetes development namespace (`smart-manufacturing-dev` via `k8s/overlays/dev/`).
+3. **`test` (QA & Automation)**: Nightly integration test stream, failover logic simulations (`pytest tests/test_failover_logic.py`), automated performance profiling, and test coverage gating.
+4. **`stage` (Pre-Production Rehearsal)**: Exact production replica. Automated SonarQube quality gates (Zero blocker code smells, coverage $\ge 80\%$), Trivy container CVE scans, and Argo Rollouts canary progressive delivery (10% traffic split).
+5. **`prod` (and `main` / `production`) (Live High-Availability Release)**: Dual-cloud production delivery to AWS EKS (Primary Active) and GCP GKE (Standby Passive). Requires semantic version tagging (`vX.Y.Z`), 2 senior approvals, and automated ArgoCD GitOps reconciliation.
+
+*Full details*: Read the [Enterprise Git Branching & Promotion Strategy](docs/git_branching_strategy.md).
+
+---
+
+### Step 11 (10): Step-by-Step Educational Curriculum & Learning Roadmap
+
+![10 Learning Roadmap](docs/images/10_step_by_step_learning_roadmap.png)
+
+Whether you are preparing for a **Principal AI Architect interview** or implementing an end-to-end industrial MLOps system from scratch, follow our structured, hands-on educational roadmap:
+
+* **Milestone 0: Microservices & Cloud-Native Foundations**: Polyglot architecture (Rust SIMD edge, Go telemetry gateway, Python deep learning, Next.js 15 cockpit) and single-command autonomous deployment (`./deploy.sh`).
+* **Milestone 1: Deep Learning Core & Anomaly Detection**: Unsupervised PyTorch Autoencoders, MSE dynamic thresholding, AOI Defect CNN, and MLflow experiment tracking.
+* **Milestone 2: MLOps Pipelines & Feature Store**: Feast-compatible dual online (Redis sub-2ms) and offline feature stores with real-time freshness SLAs (<60s).
+* **Milestone 3: Industrial GenAI, Hybrid RAG & Guardrails**: Sparse BM25 + Dense Cosine hybrid retrieval, Reciprocal Rank Fusion ($k=60$), FlashRank cross-encoder re-ranking, PII token vault, prompt injection defense, and G-Eval evaluation harness.
+* **Milestone 4: Distributed Resiliency & Lakehouse Architecture**: Transactional outbox (preventing dual writes), compensating Saga orchestration with automatic rollbacks, and Apache Iceberg ACID lakehouse with time-travel.
+* **Milestone 5: Enterprise Governance, Disaster Recovery & Security**: Two-tier KMS envelope encryption, SHA-256 cryptographic audit ledger, active-passive multi-cloud failover (AWS to GCP in $<60$s), and kernel anti-egress token bucket rate limiting.
+
+*Full details & hands-on CLI labs*: Read the [Step-by-Step Educational Learning Guide](docs/STEP_BY_STEP_LEARNING_GUIDE.md).
 
 ---
 

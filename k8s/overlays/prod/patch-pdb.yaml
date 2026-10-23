@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: smart-manufacturing-pdb
+  namespace: smart-manufacturing
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: smart-manufacturing-api

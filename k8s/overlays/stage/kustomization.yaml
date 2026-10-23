@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: patch-stage.yaml
+
+namePrefix: stage-
+labels:
+  - includeSelectors: true
+    pairs:
+      environment: staging
+      managed-by: gitops-argocd

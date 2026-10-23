@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-manufacturing-api
+  namespace: smart-manufacturing
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: accelerator
+                    operator: In
+                    values: ["nvidia-gpu", "nvidia-tesla-t4", "nvidia-l4"]
+            - weight: 20
+              preference:
+                matchExpressions:
+                  - key: cloud.google.com/gke-nodepool
+                    operator: In
+                    values: ["system-pool", "production-core-pool"]
+      containers:
+        - name: inference-api
+          image: kishorkumarparoi/smart-manufacturing:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: APP_ENV
+              value: "production"
+            - name: CURRENT_CLOUD
+              value: "gcp"
+            - name: CURRENT_REGION
+              value: "us-central1"
+            - name: PRIMARY_CLOUD
+              value: "gcp"
+            - name: GCP_GCS_BUCKET_NAME
+              value: "smart-mfg-mlops-artifacts-us-central1"
+            - name: REDIS_HOST
+              value: "redis-service.smart-manufacturing.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: PORT
+              value: "5000"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
