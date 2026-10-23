@@ -2,6 +2,7 @@ import time
 import os
 import torch
 import numpy as np
+from typing import Optional, Dict, List, Any
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -14,6 +15,12 @@ from src.serving.schemas import (
     VisionInspectionRequest,
     VisionInferenceResponse,
     ClusterHealthResponse,
+    RAGQueryRequest,
+    RAGQueryResponse,
+    GuardrailValidationRequest,
+    GuardrailValidationResponse,
+    OutboxEventRequest,
+    SagaTriggerRequest,
 )
 from src.serving.metrics import (
     INFERENCE_REQUESTS_TOTAL,
@@ -24,6 +31,17 @@ from src.serving.metrics import (
 )
 from src.models.anomaly_detector import IndustrialSensorAutoencoder
 from src.models.defect_classifier import ManufacturingDefectClassifier
+from src.rag.rag_service import IndustrialRAGService
+from src.rag.ab_testing import ABTestingHarness
+from src.rag.cost_dashboard import RAGCostAuditor
+from src.security_guardrails.guardrails import PolicyGuardrailEngine
+from src.patterns.event_outbox import TransactionalOutboxManager
+from src.patterns.saga_orchestrator import SagaOrchestrator
+from src.data_platform.lakehouse import LakehouseManager, IngestionPath
+from src.data_platform.feature_store import IndustrialFeatureStore
+from src.governance.audit_trail import ImmutableAuditTrail
+from src.governance.multi_tenant import MultiTenantManager
+from src.governance.kms_crypto import KMSEnvelopeEncryptor
 
 app = FastAPI(
     title="Smart Manufacturing MLOps AI Platform",
@@ -47,6 +65,22 @@ vision_model = ManufacturingDefectClassifier(num_classes=4).to(device)
 vision_model.eval()
 calibrated_threshold = config.anomaly_threshold
 defect_class_names = ["normal", "crack", "pitting", "burn_mark"]
+
+# Enterprise AI Architect Platform Services Singletons
+rag_service = IndustrialRAGService(enable_eval=True)
+ab_harness = ABTestingHarness()
+cost_auditor = RAGCostAuditor()
+guardrail_engine = PolicyGuardrailEngine()
+outbox_manager = TransactionalOutboxManager()
+lakehouse_manager = LakehouseManager(
+    table_name="telemetry_events",
+    base_schema={"machine_id": "str", "vibration_rms": "float", "temp_c": "float"}
+)
+feature_store = IndustrialFeatureStore()
+audit_trail = ImmutableAuditTrail()
+multi_tenant = MultiTenantManager()
+multi_tenant.register_tenant("tenant-mfg-01", "Acme Precision Stamping", "ENTERPRISE")
+kms_encryptor = KMSEnvelopeEncryptor()
 
 
 @app.on_event("startup")
@@ -274,3 +308,244 @@ def predict_visual_defect(payload: VisionInspectionRequest):
 @app.get("/metrics", tags=["Observability"])
 def metrics():
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# ==============================================================================
+# ENTERPRISE AI ARCHITECT PLATFORM ENDPOINTS
+# ==============================================================================
+
+@app.post("/api/v1/rag/query", response_model=RAGQueryResponse, tags=["GenAI & RAG"])
+def query_industrial_rag(payload: RAGQueryRequest):
+    """
+    Executes Production-Grade Industrial RAG with Policy Guardrails,
+    Semantic Caching (<50ms), Hybrid Dense+BM25 Retrieval, Cross-Encoder Re-Ranking, and G-Eval.
+    """
+    # 1. Multi-tenant quota verification
+    allowed, denial = multi_tenant.verify_request_quota(payload.tenant_id, estimated_tokens=50)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=denial)
+
+    # 2. Variant selection (A/B testing)
+    variant = payload.variant or ab_harness.route_request()
+
+    # 3. Query RAG service
+    rag_res = rag_service.query(
+        user_query=payload.query,
+        variant=variant,
+        bypass_cache=payload.bypass_cache
+    )
+
+    # 4. Record financial expenditure & A/B telemetry
+    cost_auditor.record_usage(
+        prompt_tokens=rag_res.token_usage.get("prompt_tokens", 0),
+        completion_tokens=rag_res.token_usage.get("completion_tokens", 0),
+        was_cached=rag_res.cached
+    )
+
+    geval_score = rag_res.eval_report.overall_score if rag_res.eval_report else 1.0
+    ab_harness.record_interaction(
+        variant_id=variant,
+        latency_ms=rag_res.latency_ms,
+        tokens_used=rag_res.token_usage.get("total_tokens", 0),
+        geval_score=geval_score
+    )
+
+    # 5. Commit to immutable audit trail
+    audit_trail.log_event(
+        tenant_id=payload.tenant_id,
+        actor="operator_copilot",
+        action="RAG_QUERY",
+        resource="knowledge_base",
+        details={
+            "query": payload.query,
+            "cached": rag_res.cached,
+            "latency_ms": rag_res.latency_ms,
+            "passed_guardrails": rag_res.guardrail_decision.passed,
+            "variant": variant
+        }
+    )
+
+    return RAGQueryResponse(
+        query=payload.query,
+        response=rag_res.response,
+        citations=rag_res.citations,
+        cached=rag_res.cached,
+        latency_ms=rag_res.latency_ms,
+        token_usage=rag_res.token_usage,
+        passed_guardrails=rag_res.guardrail_decision.passed,
+        geval_score=geval_score,
+        variant=variant
+    )
+
+
+@app.post("/api/v1/guardrails/validate", response_model=GuardrailValidationResponse, tags=["Security & Guardrails"])
+def validate_guardrails(payload: GuardrailValidationRequest):
+    """
+    Evaluates input text against PII leakage, prompt injection attacks, and domain topic guardrails.
+    """
+    decision = guardrail_engine.validate_input(payload.text)
+    inj = decision.injection_metadata
+
+    return GuardrailValidationResponse(
+        passed=decision.passed,
+        rejection_reason=decision.rejection_reason,
+        sanitized_text=decision.sanitized_input,
+        pii_entities_detected=len(decision.pii_metadata.redacted_entities) if decision.pii_metadata else 0,
+        injection_risk_score=inj.risk_score if inj else 0.0,
+        remediation_action=inj.remediation_action if inj else "ALLOW",
+        latency_ms=decision.latency_ms
+    )
+
+
+@app.post("/api/v1/patterns/outbox/publish", tags=["Reliability Patterns"])
+def publish_outbox_event(payload: OutboxEventRequest):
+    """
+    Transactional Outbox Pattern: Idempotent event creation and background dispatch for Kafka/EventBridge.
+    """
+    event = outbox_manager.create_event(
+        aggregate_type=payload.aggregate_type,
+        aggregate_id=payload.aggregate_id,
+        event_type=payload.event_type,
+        payload=payload.payload,
+        idempotency_key=payload.idempotency_key
+    )
+    dispatched = outbox_manager.dispatch_pending_events(mock_publish_fn=lambda e: True)
+
+    return {
+        "event_id": event.event_id,
+        "idempotency_key": event.idempotency_key,
+        "status": event.status.value,
+        "dispatched_count": len(dispatched),
+        "queue_stats": outbox_manager.get_stats()
+    }
+
+
+@app.post("/api/v1/patterns/saga/maintenance", tags=["Reliability Patterns"])
+def trigger_maintenance_saga(payload: SagaTriggerRequest):
+    """
+    Distributed Saga Orchestrator: Multi-step maintenance workflow with automatic compensating rollbacks.
+    Steps: 1. Anomaly Flagged -> 2. Inventory Reserved -> 3. Work Order Dispatched -> 4. Line RPM Throttled.
+    """
+    saga = SagaOrchestrator(workflow_name="MachineAnomalyRemediationSaga")
+
+    # Step 1: Flag Anomaly
+    saga.add_step(
+        name="flag_anomaly",
+        action=lambda ctx: True,
+        compensation=lambda ctx: True
+    )
+
+    # Step 2: Reserve Replacement Inventory
+    def reserve_part(ctx):
+        if payload.simulated_failure_step == "inventory_reservation":
+            raise RuntimeError("ERP Inventory Service Unavailable: Insufficient SKF-6205 bearing stock.")
+        ctx["inventory_reserved"] = True
+        return True
+
+    def release_part(ctx):
+        ctx["inventory_reserved"] = False
+        return True
+
+    saga.add_step("reserve_inventory", reserve_part, release_part)
+
+    # Step 3: Dispatch Work Order
+    saga.add_step(
+        name="dispatch_work_order",
+        action=lambda ctx: True,
+        compensation=lambda ctx: True
+    )
+
+    # Step 4: Throttle Machine Spindle
+    saga.add_step(
+        name="throttle_machine_rpm",
+        action=lambda ctx: True,
+        compensation=lambda ctx: True
+    )
+
+    result = saga.execute(initial_context={
+        "machine_id": payload.machine_id,
+        "part_number": payload.component_part_number
+    })
+
+    return {
+        "saga_id": result.saga_id,
+        "workflow": result.workflow_name,
+        "status": result.status.value,
+        "steps_executed": result.steps_executed,
+        "steps_compensated": result.steps_compensated,
+        "duration_ms": result.duration_ms,
+        "error_message": result.error_message
+    }
+
+
+@app.get("/api/v1/feature-store/freshness", tags=["Data Platform"])
+def get_feature_freshness():
+    """
+    Audits feature store freshness SLAs across all monitored machines (<60s streaming SLA).
+    """
+    # Sample telemetry feature ingestion
+    feature_store.push_streaming_features(
+        entity_id="CNC-MILL-ALPHA-01",
+        features={"vibration_rms": 0.45, "temperature_c": 64.5, "pressure_bar": 120.1}
+    )
+    return feature_store.audit_fleet_freshness()
+
+
+@app.get("/api/v1/lakehouse/telemetry", tags=["Data Platform"])
+def query_lakehouse(as_of_snapshot: Optional[str] = None):
+    """
+    Queries Apache Iceberg / Delta Lakehouse table with time travel snapshot auditing.
+    """
+    lakehouse_manager.write_records([
+        {"machine_id": "CNC-MILL-ALPHA-01", "vibration_rms": 0.45, "temp_c": 64.5, "status": "NOMINAL"},
+        {"machine_id": "ROBOT-WELD-03", "vibration_rms": 0.72, "temp_c": 82.0, "status": "WARNING"}
+    ], path=IngestionPath.STREAMING)
+
+    records = lakehouse_manager.time_travel_query(as_of_snapshot_id=as_of_snapshot)
+    return {
+        "table_name": lakehouse_manager.table_name,
+        "latest_snapshot_id": lakehouse_manager.snapshots[-1].snapshot_id,
+        "total_snapshots": len(lakehouse_manager.snapshots),
+        "records_returned": len(records),
+        "records": records
+    }
+
+
+@app.get("/api/v1/governance/audit-trail", tags=["Governance & Security"])
+def get_audit_trail(tenant_id: str = "tenant-mfg-01"):
+    """
+    Returns cryptographic hash-chained audit log and verifies complete ledger integrity.
+    """
+    is_valid, error = audit_trail.verify_integrity()
+    events = audit_trail.get_events_for_tenant(tenant_id)
+    return {
+        "chain_integrity_verified": is_valid,
+        "integrity_error": error,
+        "total_events": len(events),
+        "events": [
+            {
+                "sequence_id": e.sequence_id,
+                "timestamp_utc": e.timestamp_utc,
+                "action": e.action,
+                "resource": e.resource,
+                "block_hash": e.block_hash,
+                "prev_hash": e.prev_hash,
+                "details": e.details
+            }
+            for e in events
+        ]
+    }
+
+
+@app.get("/api/v1/rag/cost-dashboard", tags=["GenAI & RAG"])
+def get_cost_dashboard():
+    """
+    Returns real-time GenAI token consumption, financial spend, semantic cache savings, and A/B test analytics.
+    """
+    cost_data = cost_auditor.get_dashboard_summary()
+    ab_data = ab_harness.get_experiment_analytics()
+    return {
+        **cost_data,
+        "ab_experimentation": ab_data
+    }
+

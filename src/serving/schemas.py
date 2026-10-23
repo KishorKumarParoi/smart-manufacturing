@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 
 class SensorTelemetryItem(BaseModel):
@@ -67,3 +67,53 @@ class ClusterHealthResponse(BaseModel):
     gpu_device_name: Optional[str]
     active_model_version: str
     failover_ready: bool
+
+
+class RAGQueryRequest(BaseModel):
+    query: str
+    tenant_id: str = "tenant-mfg-01"
+    variant: str = "A"  # "A" (Dense baseline) or "B" (Hybrid reranked)
+    bypass_cache: bool = False
+
+
+class RAGQueryResponse(BaseModel):
+    query: str
+    response: str
+    citations: List[Dict[str, Any]]
+    cached: bool
+    latency_ms: float
+    token_usage: Dict[str, int]
+    passed_guardrails: bool
+    geval_score: Optional[float] = None
+    variant: str
+
+
+class GuardrailValidationRequest(BaseModel):
+    text: str
+    enforce_topic_gating: bool = True
+
+
+class GuardrailValidationResponse(BaseModel):
+    passed: bool
+    rejection_reason: Optional[str]
+    sanitized_text: str
+    pii_entities_detected: int
+    injection_risk_score: float
+    remediation_action: str
+    latency_ms: float
+
+
+class OutboxEventRequest(BaseModel):
+    aggregate_type: str = "MACHINE"
+    aggregate_id: str = "CNC-SPINDLE-01"
+    event_type: str = "CRITICAL_VIBRATION_EXCEEDED"
+    payload: Dict[str, Any]
+    idempotency_key: Optional[str] = None
+
+
+class SagaTriggerRequest(BaseModel):
+    machine_id: str = "CNC-MILL-ALPHA-01"
+    anomaly_severity: str = "CRITICAL"
+    component_part_number: str = "BEARING-SKF-6205"
+    simulated_failure_step: Optional[str] = None  # e.g., "inventory_reservation"
+
