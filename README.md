@@ -13,8 +13,10 @@
 [![SonarQube](https://img.shields.io/badge/SonarQube-Quality_Gate-4E9BCD?logo=sonarqube&logoColor=white)](https://www.sonarqube.org/)
 [![Trivy](https://img.shields.io/badge/Trivy-CVE_Security_Scan-1904DA?logo=aquasecurity&logoColor=white)](https://aquasecurity.github.io/trivy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Architecture: Specification](https://img.shields.io/badge/Architecture-Specification-8A2BE2?logo=diagramsdotnet&logoColor=white)](ARCHITECTURE.md)
+[![Workflow: SVG Flow](https://img.shields.io/badge/Workflow-Interactive_SVG-00C7B7?logo=vectorlogozone&logoColor=white)](docs/images/01_architecture_flow.svg)
 
-> **Enterprise-Grade, Production-Hardened Industrial AI & Multi-Cloud MLOps Platform** engineered for smart manufacturing assembly lines. Delivers real-time sensor anomaly detection (PyTorch Autoencoders), automated optical defect inspection (Deep CNN), an enterprise 12-stage declarative Jenkins CI/CD pipeline, continuous delivery via ArgoCD GitOps, distributed EFK logging, Prometheus/Grafana observability, and a battle-tested **Active-Passive Multi-Cloud (AWS + GCP) Disaster Recovery Architecture** with zero-trust egress security.
+> **Enterprise-Grade, Production-Hardened Industrial AI & Multi-Cloud MLOps Platform** engineered for smart manufacturing assembly lines. Delivers real-time sensor anomaly detection (PyTorch Autoencoders), automated optical defect inspection (Deep CNN), an enterprise 12-stage declarative Jenkins CI/CD pipeline, continuous delivery via ArgoCD GitOps, distributed EFK logging, Prometheus/Grafana observability, and a battle-tested **Active-Passive Multi-Cloud (AWS + GCP) Disaster Recovery Architecture** with zero-trust egress security. Full architectural blueprint available in [ARCHITECTURE.md](ARCHITECTURE.md) and interactive vector flow in [01_architecture_flow.svg](docs/images/01_architecture_flow.svg).
 
 ---
 
